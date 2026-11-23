@@ -3,7 +3,7 @@ package org.fossify.gallery.ui.home
 import android.app.Application
 import androidx.activity.result.IntentSenderRequest
 import androidx.compose.runtime.Immutable
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,7 +42,7 @@ data class GalleryUiState(
     val pendingIntentRequest: IntentSenderRequest? = null
 )
 
-class GalleryViewModel(application: Application) : ViewModel() {
+class GalleryViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = LuminaMediaRepository(application)
 
     private val _uiState = MutableStateFlow(GalleryUiState())
@@ -65,8 +65,35 @@ class GalleryViewModel(application: Application) : ViewModel() {
         }
     }
 
+    fun refresh() {
+        viewModelScope.launch {
+            val media = repository.queryAllMedia()
+            _uiState.update { current ->
+                val albums = repository.extractDirectories(media)
+                val filtered = filterMedia(media, current.searchQuery, current.activeAlbumId)
+                val sections = groupIntoTimeline(filtered)
+                current.copy(
+                    allMedia = media,
+                    timelineSections = sections,
+                    albums = albums
+                )
+            }
+        }
+    }
+
     fun setTab(tab: GalleryTab) {
-        _uiState.update { it.copy(selectedTab = tab) }
+        _uiState.update { current ->
+            if (tab == GalleryTab.PHOTOS && current.activeAlbumId != null) {
+                val filtered = filterMedia(current.allMedia, current.searchQuery, null)
+                current.copy(
+                    selectedTab = tab,
+                    activeAlbumId = null,
+                    timelineSections = groupIntoTimeline(filtered)
+                )
+            } else {
+                current.copy(selectedTab = tab)
+            }
+        }
     }
 
     fun setSearchQuery(query: String) {

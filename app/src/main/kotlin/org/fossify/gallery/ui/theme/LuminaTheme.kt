@@ -1,6 +1,5 @@
 package org.fossify.gallery.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -38,7 +37,7 @@ private val LuminaLightColors = lightColorScheme(
 
 private val LuminaDarkColors = darkColorScheme(
     primary = Color(0xFFA8C8FF),
-    onPrimary = Color(0xFF003062),
+    onPrimary = Color.White,
     primaryContainer = Color(0xFF084580),
     onPrimaryContainer = Color(0xFFD6E3FF),
     secondary = Color(0xFFBDC7DC),
@@ -68,6 +67,7 @@ private val LuminaShapes = Shapes(
 @Composable
 fun LuminaTheme(
     themeMode: String = "SYSTEM",
+    dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
@@ -77,7 +77,7 @@ fun LuminaTheme(
         "DARK" -> true
         else -> systemDark
     }
-    val colorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    val colorScheme = if (dynamicColor) {
         if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
     } else {
         if (darkTheme) LuminaDarkColors else LuminaLightColors

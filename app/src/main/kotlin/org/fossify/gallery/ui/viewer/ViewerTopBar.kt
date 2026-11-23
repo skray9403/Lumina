@@ -4,6 +4,7 @@ import android.app.WallpaperManager
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
@@ -22,6 +23,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -37,48 +40,62 @@ fun ViewerTopBar(
     val context = LocalContext.current
     var isMenuOpen by remember { mutableStateOf(false) }
 
-    TopAppBar(
-        title = {
-            Text(
-                text = medium.displayName,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleMedium,
-                color = Color.White
-            )
-        },
-        navigationIcon = {
-            IconButton(onClick = onBack) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .drawWithCache {
+                val scrim = Brush.verticalGradient(
+                    0.0f to Color.Black.copy(alpha = 0.72f),
+                    0.65f to Color.Black.copy(alpha = 0.34f),
+                    1.0f to Color.Transparent
                 )
+                onDrawBehind {
+                    drawRect(brush = scrim)
+                }
             }
-        },
-        actions = {
-            Box {
-                IconButton(onClick = { isMenuOpen = true }) {
+    ) {
+        TopAppBar(
+            title = {
+                Text(
+                    text = medium.displayName,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White
+                )
+            },
+            navigationIcon = {
+                IconButton(onClick = onBack) {
                     Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "More actions",
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
                         tint = Color.White
                     )
                 }
+            },
+            actions = {
+                Box {
+                    IconButton(onClick = { isMenuOpen = true }) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "More actions",
+                            tint = Color.White
+                        )
+                    }
 
-                ViewerOverflowMenu(
-                    medium = medium,
-                    expanded = isMenuOpen,
-                    onDismiss = { isMenuOpen = false },
-                    context = context
-                )
-            }
-        },
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = Color.Black.copy(alpha = 0.5f)
-        ),
-        modifier = modifier
-    )
+                    ViewerOverflowMenu(
+                        medium = medium,
+                        expanded = isMenuOpen,
+                        onDismiss = { isMenuOpen = false },
+                        context = context
+                    )
+                }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = Color.Transparent
+            )
+        )
+    }
 }
 
 @Composable
@@ -92,7 +109,6 @@ fun ViewerOverflowMenu(
         expanded = expanded,
         onDismissRequest = onDismiss
     ) {
-        // 1. Set as wallpaper
         if (!medium.isVideo) {
             DropdownMenuItem(
                 text = { Text("Set as wallpaper") },
@@ -114,7 +130,6 @@ fun ViewerOverflowMenu(
             )
         }
 
-        // 2. Open with
         DropdownMenuItem(
             text = { Text("Open with") },
             onClick = {
@@ -127,7 +142,6 @@ fun ViewerOverflowMenu(
             }
         )
 
-        // 3. Use as
         DropdownMenuItem(
             text = { Text("Use as") },
             onClick = {
