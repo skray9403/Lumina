@@ -1,9 +1,11 @@
 package org.fossify.gallery.ui.data
 
 import android.content.ContentResolver
+import android.content.ContentValues
 import android.content.Context
 import android.database.ContentObserver
 import android.net.Uri
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
@@ -20,9 +22,6 @@ import kotlinx.coroutines.withContext
 import org.fossify.gallery.models.Directory
 import org.fossify.gallery.models.Medium
 
-/**
- * Single source of truth for MediaStore operations on Android 13+ (API 33+).
- */
 @OptIn(FlowPreview::class)
 class LuminaMediaRepository(context: Context) {
     private val contentResolver: ContentResolver = context.applicationContext.contentResolver
@@ -64,7 +63,6 @@ class LuminaMediaRepository(context: Context) {
                 observer
             )
         } catch (_: Exception) {
-            // Permission may not be granted yet
         }
 
         trySend(Unit)
@@ -180,6 +178,66 @@ class LuminaMediaRepository(context: Context) {
                 coverDateModifiedMs = first.dateModifiedMs
             )
         }.sortedByDescending { it.latestDateMs }
+    }
+
+    /**
+     * Copies media items into an existing or new album folder using scoped MediaStore insert.
+     */
+    suspend fun copyMediaToAlbum(
+        items: List<Medium>,
+        albumName: String,
+        targetRelativePath: String? = null
+    ): Int = withContext(Dispatchers.IO) {
+        val sanitizedAlbum = albumName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        if (sanitizedAlbum.isEmpty()) return@withContext 0
+
+        var copiedCount = 0
+        for (medium in items) {
+            try {
+                val collection = if (medium.isVideo) {
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                } else {
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                }
+                val defaultRoot = if (medium.isVideo) {
+                    Environment.DIRECTORY_MOVIES
+                } else {
+                    Environment.DIRECTORY_PICTURES
+                }
+                val resolvedPath = targetRelativePath?.takeIf { it.isNotBlank() }
+                    ?: "$defaultRoot/$sanitizedAlbum/"
+
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, medium.displayName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, medium.mimeType)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, resolvedPath)
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+
+                val destUri = contentResolver.insert(collection, values) ?: continue
+                var success = false
+                try {
+                    contentResolver.openInputStream(medium.uri)?.use { input ->
+                        contentResolver.openOutputStream(destUri)?.use { output ->
+                            input.copyTo(output)
+                            success = true
+                        }
+                    }
+                } finally {
+                    if (success) {
+                        val finish = ContentValues().apply {
+                            put(MediaStore.MediaColumns.IS_PENDING, 0)
+                        }
+                        contentResolver.update(destUri, finish, null, null)
+                        copiedCount++
+                    } else {
+                        contentResolver.delete(destUri, null, null)
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+        copiedCount
     }
 
     fun createDeleteRequest(uris: List<Uri>): IntentSenderRequest {

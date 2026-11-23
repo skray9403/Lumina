@@ -12,11 +12,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -27,7 +25,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -42,7 +39,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.fossify.gallery.engine.image.NativeThumbnailLoader
 import org.fossify.gallery.engine.image.rememberThumbnail
@@ -54,7 +50,7 @@ private val SelectedTileShape = RoundedCornerShape(14.dp)
 
 @Composable
 fun MediaTimelineGrid(
-    sections: List<TimelineSection>,
+    media: List<Medium>,
     columnCount: Int,
     gridState: LazyGridState,
     selectedIds: Set<Long>,
@@ -74,45 +70,27 @@ fun MediaTimelineGrid(
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        sections.forEach { section ->
-            item(
-                span = { GridItemSpan(maxLineSpan) },
-                key = "header_${section.title}",
-                contentType = "date_header"
-            ) {
-                Text(
-                    text = section.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)
-                )
-            }
-
-            items(
-                items = section.items,
-                key = { it.id },
-                contentType = { "media_item" }
-            ) { medium ->
-                val isSelected = isMultiSelectMode && medium.id in selectedIds
-                TimelineMediaItem(
-                    medium = medium,
-                    isSelected = isSelected,
-                    isMultiSelectMode = isMultiSelectMode,
-                    isHidden = medium.id == hiddenMediaId,
-                    tileBounds = tileBounds,
-                    onClick = {
-                        if (isMultiSelectMode) {
-                            onMediaLongClick(medium)
-                        } else {
-                            onMediaClick(medium, tileBounds[medium.id])
-                        }
-                    },
-                    onLongClick = { onMediaLongClick(medium) }
-                )
-            }
+        items(
+            items = media,
+            key = { it.id },
+            contentType = { "media_item" }
+        ) { medium ->
+            val isSelected = isMultiSelectMode && medium.id in selectedIds
+            TimelineMediaItem(
+                medium = medium,
+                isSelected = isSelected,
+                isMultiSelectMode = isMultiSelectMode,
+                isHidden = medium.id == hiddenMediaId,
+                tileBounds = tileBounds,
+                onClick = {
+                    if (isMultiSelectMode) {
+                        onMediaLongClick(medium)
+                    } else {
+                        onMediaClick(medium, tileBounds[medium.id])
+                    }
+                },
+                onLongClick = { onMediaLongClick(medium) }
+            )
         }
     }
 }
@@ -134,7 +112,6 @@ private fun TimelineMediaItem(
         onDispose { tileBounds.remove(medium.id) }
     }
 
-    // Only allocate selection animators when actually in multi-select mode
     val selectionScale = if (isMultiSelectMode) {
         animateFloatAsState(
             targetValue = if (isSelected) 0.86f else 1f,

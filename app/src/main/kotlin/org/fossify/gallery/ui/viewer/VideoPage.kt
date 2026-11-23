@@ -26,7 +26,10 @@ fun VideoPage(
     isCurrentPage: Boolean,
     playerPool: PlayerPool,
     modifier: Modifier = Modifier,
-    onSingleTap: () -> Unit = {}
+    onSingleTap: () -> Unit = {},
+    onVerticalDismissDrag: (Float) -> Unit = {},
+    onVerticalDismissEnd: (Float) -> Unit = {},
+    onSwipeUpDetails: () -> Unit = {}
 ) {
     val previewThumbnail = rememberThumbnail(medium)
     var activePlayer by remember(medium.uri) { mutableStateOf<ExoPlayer?>(null) }
@@ -49,7 +52,10 @@ fun VideoPage(
             )
             VideoGestureOverlay(
                 player = player,
-                onSingleTap = onSingleTap
+                onSingleTap = onSingleTap,
+                onVerticalDismissDrag = onVerticalDismissDrag,
+                onVerticalDismissEnd = onVerticalDismissEnd,
+                onSwipeUpDetails = onSwipeUpDetails
             )
         } else if (previewThumbnail != null) {
             Image(

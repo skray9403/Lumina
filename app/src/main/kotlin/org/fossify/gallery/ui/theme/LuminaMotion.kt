@@ -9,9 +9,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 
-/**
- * Critically-damped / zero-overshoot motion tokens tuned for 120Hz.
- */
 object LuminaMotion {
     fun <T> spatialStandard() = spring<T>(
         dampingRatio = 0.96f,
@@ -22,7 +19,7 @@ object LuminaMotion {
 
     fun <T> responsiveSpring() = spring<T>(
         dampingRatio = 0.98f,
-        stiffness = 850f
+        stiffness = 860f
     )
 
     fun <T> gentleSpring() = spring<T>(
@@ -32,12 +29,12 @@ object LuminaMotion {
 
     val viewerMorph = spring<Float>(
         dampingRatio = 0.96f,
-        stiffness = 640f
+        stiffness = 650f
     )
 
     val dockSizeSpec = spring<IntSize>(
         dampingRatio = 0.96f,
-        stiffness = 720f
+        stiffness = 740f
     )
 
     val pressScale = spring<Float>(
@@ -55,15 +52,31 @@ object LuminaMotion {
         easing = FastOutSlowInEasing
     )
 
-    /** Through-zero mode swap: outgoing hits 0f before incoming starts. */
+    /** Smooth shared-axis tab & overlay transition (zero blank-gap flash). */
+    val tabSlideSpec = tween<IntOffset>(
+        durationMillis = 200,
+        easing = FastOutSlowInEasing
+    )
+
+    val tabFadeIn = tween<Float>(
+        durationMillis = 180,
+        easing = LinearOutSlowInEasing
+    )
+
+    val tabFadeOut = tween<Float>(
+        durationMillis = 130,
+        easing = FastOutSlowInEasing
+    )
+
+    /** Through-zero mode swap for dock icon groups. */
     val throughZeroExit = tween<Float>(
-        durationMillis = 85,
+        durationMillis = 80,
         easing = FastOutSlowInEasing
     )
 
     val throughZeroEnter = tween<Float>(
-        durationMillis = 135,
-        delayMillis = 85,
+        durationMillis = 130,
+        delayMillis = 80,
         easing = LinearOutSlowInEasing
     )
 

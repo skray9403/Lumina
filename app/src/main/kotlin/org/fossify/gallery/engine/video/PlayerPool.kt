@@ -5,16 +5,18 @@ import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * Single shared ExoPlayer owner for LuminaViewer.
- * Lifecycle observation is managed cleanly via DisposableEffect at the host level.
- */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerPool(context: Context) {
     private val appContext = context.applicationContext
     private var currentPlayer: ExoPlayer? = null
     private var currentUri: Uri? = null
+
+    private val _activePlayer = MutableStateFlow<ExoPlayer?>(null)
+    val activePlayer: StateFlow<ExoPlayer?> = _activePlayer.asStateFlow()
 
     fun acquirePlayer(uri: Uri): ExoPlayer {
         val player = currentPlayer ?: ExoPlayer.Builder(appContext).build().also {
@@ -28,6 +30,7 @@ class PlayerPool(context: Context) {
             player.prepare()
             player.playWhenReady = true
         }
+        _activePlayer.value = player
         return player
     }
 
@@ -36,6 +39,7 @@ class PlayerPool(context: Context) {
     }
 
     fun release() {
+        _activePlayer.value = null
         currentPlayer?.stop()
         currentPlayer?.release()
         currentPlayer = null

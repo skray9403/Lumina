@@ -1,6 +1,5 @@
 package org.fossify.gallery.ui.home
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +31,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.fossify.gallery.ui.theme.pressScale
+import org.fossify.gallery.ui.theme.rememberLuminaPillTokens
 
 @Composable
 fun SelectionTopBar(
@@ -42,22 +42,21 @@ fun SelectionTopBar(
     showConfirmPick: Boolean = false,
     onConfirmPick: () -> Unit = {}
 ) {
+    val tokens = rememberLuminaPillTokens()
+
     Surface(
         shape = RoundedCornerShape(28.dp),
         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.96f),
-        border = BorderStroke(
-            width = 0.75.dp,
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
-        ),
-        shadowElevation = 4.dp,
+        border = tokens.border,
+        shadowElevation = tokens.shadowElevation,
         modifier = modifier
             .fillMaxWidth()
-            .height(52.dp)
+            .height(48.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp),
+                .padding(horizontal = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -107,7 +106,7 @@ private fun PillIconButton(
     val interactionSource = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(38.dp)
             .pressScale(interactionSource, pressedScale = 0.88f)
             .clip(CircleShape)
             .clickable(

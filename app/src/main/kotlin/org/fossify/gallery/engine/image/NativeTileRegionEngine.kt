@@ -27,7 +27,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -60,12 +59,6 @@ private data class DecodedTile(
     val byteCount: Int
 )
 
-/**
- * Viewport-culled deep-zoom tile renderer and gesture engine.
- * - Leaves horizontal swipes unconsumed at 1x so HorizontalPager works natively.
- * - Routes downward vertical drags at 1x to onVerticalDismissDrag / onVerticalDismissEnd.
- * - Decodes only visible tiles intersecting the screen viewport when scale > 1.5f.
- */
 @Composable
 fun NativeTiledImageViewer(
     baseBitmap: ImageBitmap,
@@ -77,7 +70,8 @@ fun NativeTiledImageViewer(
     onSingleTap: () -> Unit = {},
     onEdgeSwipeHandoff: (Boolean) -> Unit = {},
     onVerticalDismissDrag: (Float) -> Unit = {},
-    onVerticalDismissEnd: (Float) -> Unit = {}
+    onVerticalDismissEnd: (Float) -> Unit = {},
+    onSwipeUpDetails: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -127,7 +121,6 @@ fun NativeTiledImageViewer(
         }
     }
 
-    // Recompute only tiles visible in current viewport
     LaunchedEffect(scale, offset, regionDecoder, viewportSize) {
         val decoder = regionDecoder ?: return@LaunchedEffect
         if (scale <= 1.5f || viewportSize.width <= 0 || viewportSize.height <= 0) {
@@ -138,7 +131,6 @@ fun NativeTiledImageViewer(
 
         tileJob?.cancel()
         tileJob = scope.launch(Dispatchers.IO) {
-            // Brief settle debounce avoids decoding intermediate frames during fast pinch
             delay(32)
             if (!isActive) return@launch
 
@@ -248,6 +240,7 @@ fun NativeTiledImageViewer(
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
                     var verticalDismissActive = false
+                    var swipeUpTriggered = false
                     var totalVerticalDrag = 0f
                     var totalDragX = 0f
                     var totalDragY = 0f
@@ -258,7 +251,6 @@ fun NativeTiledImageViewer(
                         val activePointers = event.changes.count { it.pressed }
 
                         if (activePointers >= 2) {
-                            // Multi-touch pinch/zoom
                             verticalDismissActive = false
                             val zoomChange = event.calculateZoom()
                             val panChange = event.calculatePan()
@@ -277,7 +269,6 @@ fun NativeTiledImageViewer(
                         } else if (activePointers == 1) {
                             val pan = event.calculatePan()
                             if (scale > 1.02f) {
-                                // Zoomed panning with edge handoff to pager
                                 val maxPanX = max(0f, (size.width * scale - size.width) / 2f)
                                 val atLeftEdge = offset.x >= maxPanX - 1f && pan.x > 0f
                                 val atRightEdge = offset.x <= -maxPanX + 1f && pan.x < 0f
@@ -294,16 +285,19 @@ fun NativeTiledImageViewer(
                                     event.changes.forEach { if (it.positionChanged()) it.consume() }
                                 }
                             } else {
-                                // Unzoomed: horizontal -> HorizontalPager, vertical down -> dismiss
                                 totalDragX += pan.x
                                 totalDragY += pan.y
 
-                                if (!verticalDismissActive && !lockedHorizontalForPager) {
+                                if (!verticalDismissActive && !lockedHorizontalForPager && !swipeUpTriggered) {
                                     val slop = viewConfiguration.touchSlop
                                     if (abs(totalDragX) > slop && abs(totalDragX) > abs(totalDragY)) {
                                         lockedHorizontalForPager = true
                                     } else if (totalDragY > slop && abs(totalDragY) > abs(totalDragX) * 1.15f) {
                                         verticalDismissActive = true
+                                    } else if (totalDragY < -slop * 3f && abs(totalDragY) > abs(totalDragX) * 1.25f) {
+                                        swipeUpTriggered = true
+                                        onSwipeUpDetails()
+                                        event.changes.forEach { if (it.positionChanged()) it.consume() }
                                     }
                                 }
 
@@ -343,14 +337,12 @@ fun NativeTiledImageViewer(
 
             translate(left = offset.x, top = offset.y) {
                 scale(scale = scale, pivot = center) {
-                    // 1. Base hardware-decoded screen-fitted bitmap
                     drawImage(
                         image = baseBitmap,
                         dstOffset = IntOffset(fitLeft.roundToInt(), fitTop.roundToInt()),
                         dstSize = IntSize(fitW.roundToInt(), fitH.roundToInt())
                     )
 
-                    // 2. Orientation-aligned high-res region tiles
                     val decoder = regionDecoder
                     if (scale > 1.5f && decoder != null && visibleTiles.isNotEmpty()) {
                         val rawW = decoder.width.toFloat()
@@ -437,10 +429,8 @@ private fun computeVisibleRawRect(
     var maxY = Float.NEGATIVE_INFINITY
 
     for (pt in corners) {
-        // Inverse of translate(offset) -> scale(scale, center) -> translate(cx, cy)
         val vx = (pt.x - offset.x - cx) / scale
         val vy = (pt.y - offset.y - cy) / scale
-        // Inverse rotation
         val (rx, ry) = when (orientation) {
             90 -> Pair(vy, -vx)
             180 -> Pair(-vx, -vy)

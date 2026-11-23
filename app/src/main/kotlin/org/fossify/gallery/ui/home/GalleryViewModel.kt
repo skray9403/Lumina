@@ -46,10 +46,14 @@ data class GalleryUiState(
     val columnCount: Int = 3,
     val searchQuery: String = "",
     val activeAlbumId: Long? = null,
+    val activeAlbumName: String? = null,
     val pendingIntentRequest: IntentSenderRequest? = null,
     val visibleMedia: List<Medium> = emptyList(),
     val indexToDatePill: List<String> = emptyList(),
     val mediaIdToGridIndex: Map<Long, Int> = emptyMap(),
+    val albumMedia: List<Medium> = emptyList(),
+    val albumIndexToDatePill: List<String> = emptyList(),
+    val albumMediaIdToGridIndex: Map<Long, Int> = emptyMap(),
     val isSearchActive: Boolean = false
 )
 
@@ -60,16 +64,16 @@ private data class FilterInputs(
     val searchQuery: String = "",
     val isSearchActive: Boolean = false,
     val activeAlbumId: Long? = null,
+    val activeAlbumName: String? = null,
     val pickerMimeType: String? = null,
     val pendingIntentRequest: IntentSenderRequest? = null
 )
 
-private data class DerivedTimeline(
-    val visibleMedia: List<Medium>,
+private data class FlatFeedProjection(
+    val items: List<Medium>,
     val sections: List<TimelineSection>,
-    val albums: List<Directory>,
-    val indexToDatePill: List<String>,
-    val mediaIdToGridIndex: Map<Long, Int>
+    val indexToPill: List<String>,
+    val idToIndex: Map<Long, Int>
 )
 
 class GalleryViewModel(application: Application) : AndroidViewModel(application) {
@@ -87,26 +91,54 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     val uiState: StateFlow<GalleryUiState> = combine(rawMedia, inputs) { media, inp ->
-        val derived = deriveTimeline(
-            media = media,
-            query = inp.searchQuery,
-            albumId = inp.activeAlbumId,
-            pickerMimeType = inp.pickerMimeType
+        val mimeFiltered = when {
+            inp.pickerMimeType == null || inp.pickerMimeType == "*/*" -> media
+            inp.pickerMimeType.startsWith("image/") -> media.filter { !it.isVideo }
+            inp.pickerMimeType.startsWith("video/") -> media.filter { it.isVideo }
+            else -> media
+        }
+
+        val albums = repository.extractDirectories(mimeFiltered)
+
+        // Main Photos feed projection (with search query if active and not inside an album)
+        val mainFiltered = applySearch(
+            media = mimeFiltered,
+            query = if (inp.activeAlbumId == null) inp.searchQuery else ""
         )
+        val mainProj = buildFlatProjection(mainFiltered)
+
+        // Stacked Album overlay projection (filtered by bucket + search query)
+        val albumFiltered = if (inp.activeAlbumId != null) {
+            applySearch(
+                media = mimeFiltered.filter { it.bucketId == inp.activeAlbumId },
+                query = inp.searchQuery
+            )
+        } else {
+            emptyList()
+        }
+        val albumProj = buildFlatProjection(albumFiltered)
+
+        val resolvedAlbumName = inp.activeAlbumName
+            ?: inp.activeAlbumId?.let { id -> albums.firstOrNull { it.bucketId == id }?.name }
+
         GalleryUiState(
             allMedia = media,
-            timelineSections = derived.sections,
-            albums = derived.albums,
+            timelineSections = if (inp.activeAlbumId != null) albumProj.sections else mainProj.sections,
+            albums = albums,
             selectedTab = inp.selectedTab,
             selectedIds = inp.selectedIds,
             isMultiSelectMode = inp.selectedIds.isNotEmpty(),
             columnCount = inp.columnCount,
             searchQuery = inp.searchQuery,
             activeAlbumId = inp.activeAlbumId,
+            activeAlbumName = resolvedAlbumName,
             pendingIntentRequest = inp.pendingIntentRequest,
-            visibleMedia = derived.visibleMedia,
-            indexToDatePill = derived.indexToDatePill,
-            mediaIdToGridIndex = derived.mediaIdToGridIndex,
+            visibleMedia = mainProj.items,
+            indexToDatePill = mainProj.indexToPill,
+            mediaIdToGridIndex = mainProj.idToIndex,
+            albumMedia = albumProj.items,
+            albumIndexToDatePill = albumProj.indexToPill,
+            albumMediaIdToGridIndex = albumProj.idToIndex,
             isSearchActive = inp.isSearchActive
         )
     }
@@ -129,10 +161,46 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     fun setTab(tab: GalleryTab) {
         inputs.update { current ->
-            if (tab == GalleryTab.PHOTOS && current.activeAlbumId != null) {
-                current.copy(selectedTab = tab, activeAlbumId = null)
-            } else {
-                current.copy(selectedTab = tab)
+            current.copy(
+                selectedTab = tab,
+                activeAlbumId = if (tab == GalleryTab.PHOTOS) null else current.activeAlbumId,
+                activeAlbumName = if (tab == GalleryTab.PHOTOS) null else current.activeAlbumName
+            )
+        }
+    }
+
+    fun openAlbum(album: Directory) {
+        inputs.update {
+            it.copy(
+                activeAlbumId = album.bucketId,
+                activeAlbumName = album.name,
+                searchQuery = "",
+                isSearchActive = false
+            )
+        }
+    }
+
+    fun closeAlbum() {
+        inputs.update {
+            it.copy(
+                activeAlbumId = null,
+                activeAlbumName = null,
+                searchQuery = "",
+                isSearchActive = false
+            )
+        }
+    }
+
+    /** Preserved for compatibility with existing callers/tests. */
+    fun filterByAlbum(bucketId: Long?) {
+        if (bucketId == null) {
+            closeAlbum()
+        } else {
+            inputs.update {
+                it.copy(
+                    activeAlbumId = bucketId,
+                    activeAlbumName = uiState.value.albums.firstOrNull { a -> a.bucketId == bucketId }?.name
+                )
             }
         }
     }
@@ -151,39 +219,41 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         inputs.update { it.copy(searchQuery = query) }
     }
 
-    fun filterByAlbum(bucketId: Long?) {
-        inputs.update {
-            it.copy(
-                activeAlbumId = bucketId,
-                selectedTab = GalleryTab.PHOTOS
-            )
-        }
-    }
-
     fun setColumnCount(count: Int) {
-        val clamped = count.coerceIn(2, 5)
-        inputs.update { it.copy(columnCount = clamped) }
+        inputs.update { it.copy(columnCount = count.coerceIn(2, 5)) }
     }
 
     fun toggleSelection(id: Long) {
         inputs.update { current ->
-            val next = if (id in current.selectedIds) {
-                current.selectedIds - id
-            } else {
-                current.selectedIds + id
-            }
+            val next = if (id in current.selectedIds) current.selectedIds - id else current.selectedIds + id
             current.copy(selectedIds = next)
         }
     }
 
-    /** Scoped strictly to currently visible timeline (album/search filtered). */
     fun selectAll() {
-        val visibleIds = uiState.value.visibleMedia.mapTo(HashSet()) { it.id }
+        val state = uiState.value
+        val activeFeed = if (state.activeAlbumId != null) state.albumMedia else state.visibleMedia
+        val visibleIds = activeFeed.mapTo(HashSet()) { it.id }
         inputs.update { it.copy(selectedIds = visibleIds) }
     }
 
     fun clearSelection() {
         inputs.update { it.copy(selectedIds = emptySet()) }
+    }
+
+    fun addMediaToAlbum(
+        items: List<Medium>,
+        albumName: String,
+        targetRelativePath: String? = null,
+        onComplete: (Int) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val copied = repository.copyMediaToAlbum(items, albumName, targetRelativePath)
+            if (copied > 0) {
+                rawMedia.value = repository.queryAllMedia()
+            }
+            onComplete(copied)
+        }
     }
 
     fun deleteSelected() {
@@ -217,74 +287,61 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         inputs.update { it.copy(pendingIntentRequest = null) }
     }
 
-    private fun deriveTimeline(
-        media: List<Medium>,
-        query: String,
-        albumId: Long?,
-        pickerMimeType: String?
-    ): DerivedTimeline {
-        val mimeFiltered = when {
-            pickerMimeType == null || pickerMimeType == "*/*" -> media
-            pickerMimeType.startsWith("image/") -> media.filter { !it.isVideo }
-            pickerMimeType.startsWith("video/") -> media.filter { it.isVideo }
-            else -> media
+    private fun applySearch(media: List<Medium>, query: String): List<Medium> {
+        if (query.isBlank()) return media
+        val lower = query.trim().lowercase(Locale.ROOT)
+        return media.filter {
+            it.displayName.lowercase(Locale.ROOT).contains(lower) ||
+                it.bucketName.lowercase(Locale.ROOT).contains(lower)
         }
+    }
 
-        val albums = repository.extractDirectories(mimeFiltered)
-
-        var filtered = mimeFiltered
-        if (albumId != null) {
-            filtered = filtered.filter { it.bucketId == albumId }
-        }
-        if (query.isNotBlank()) {
-            val lower = query.trim().lowercase(Locale.ROOT)
-            filtered = filtered.filter {
-                it.displayName.lowercase(Locale.ROOT).contains(lower) ||
-                    it.bucketName.lowercase(Locale.ROOT).contains(lower)
-            }
+    private fun buildFlatProjection(media: List<Medium>): FlatFeedProjection {
+        if (media.isEmpty()) {
+            return FlatFeedProjection(emptyList(), emptyList(), emptyList(), emptyMap())
         }
 
         val zone = ZoneId.systemDefault()
         val currentYear = LocalDate.now(zone).year
         val locale = Locale.getDefault()
-        val headerFmtSameYear = DateTimeFormatter.ofPattern("EEE, d MMM", locale)
-        val headerFmtOtherYear = DateTimeFormatter.ofPattern("EEE, d MMM yyyy", locale)
+        val fmtSameYear = DateTimeFormatter.ofPattern("EEE, d MMM", locale)
+        val fmtOtherYear = DateTimeFormatter.ofPattern("EEE, d MMM yyyy", locale)
 
-        val grouped = LinkedHashMap<LocalDate, MutableList<Medium>>()
-        for (item in filtered) {
+        val indexToPill = ArrayList<String>(media.size)
+        val idToIndex = HashMap<Long, Int>(media.size)
+        val grouped = LinkedHashMap<String, MutableList<Medium>>()
+
+        var lastDay: LocalDate? = null
+        var lastLabel = ""
+
+        media.forEachIndexed { idx, item ->
             val day = Instant.ofEpochMilli(item.dateTakenMs).atZone(zone).toLocalDate()
-            grouped.getOrPut(day) { ArrayList() }.add(item)
-        }
-
-        val sections = ArrayList<TimelineSection>(grouped.size)
-        val indexToPill = ArrayList<String>(filtered.size + grouped.size)
-        val idToIndex = HashMap<Long, Int>(filtered.size)
-
-        var gridIndex = 0
-        for ((day, items) in grouped) {
-            val label = if (day.year == currentYear) {
-                day.format(headerFmtSameYear)
+            val label = if (day == lastDay) {
+                lastLabel
             } else {
-                day.format(headerFmtOtherYear)
+                lastDay = day
+                val formatted = if (day.year == currentYear) {
+                    day.format(fmtSameYear)
+                } else {
+                    day.format(fmtOtherYear)
+                }
+                lastLabel = formatted
+                formatted
             }
-            sections.add(TimelineSection(title = label, pillLabel = label, items = items))
-            // Header item index
             indexToPill.add(label)
-            gridIndex++
-            // Media item indices
-            for (m in items) {
-                indexToPill.add(label)
-                idToIndex[m.id] = gridIndex
-                gridIndex++
-            }
+            idToIndex[item.id] = idx
+            grouped.getOrPut(label) { ArrayList() }.add(item)
         }
 
-        return DerivedTimeline(
-            visibleMedia = filtered,
+        val sections = grouped.map { (title, list) ->
+            TimelineSection(title = title, pillLabel = title, items = list)
+        }
+
+        return FlatFeedProjection(
+            items = media,
             sections = sections,
-            albums = albums,
-            indexToDatePill = indexToPill,
-            mediaIdToGridIndex = idToIndex
+            indexToPill = indexToPill,
+            idToIndex = idToIndex
         )
     }
 }

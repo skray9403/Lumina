@@ -483,6 +483,7 @@ Lumina/
 
 ### 6. Home Screen & Timeline Feed
 - **`app/src/main/kotlin/org/fossify/gallery/ui/home/LuminaHomeScreen.kt`**: Main feed container. Manages full-bleed feed, fixed-height floating top chrome, runtime API 33+ permissions, back gestures, and scoped MediaStore intent launchers.
+- **`app/src/main/kotlin/org/fossify/gallery/ui/home/AlbumDetailOverlay.kt`**: Stacked Album overlay mounted above AlbumsGrid with quick scale+slide entry and native API 33+ PredictiveBackHandler revealing AlbumsGrid underneath.
 - **`app/src/main/kotlin/org/fossify/gallery/ui/home/FloatingTopChrome.kt`**: Centered floating dark date pill (e.g., Sun, 1 Nov) with zero-churn derivedStateOf lookup, right-aligned circular overflow pill, optional left album back-chip, and clean in-place swaps to SearchBarOverlay or SelectionTopBar.
 - **`app/src/main/kotlin/org/fossify/gallery/ui/home/MediaTimelineGrid.kt`**: Grouped date headers, multi-column `LazyVerticalGrid` (2–5 columns), 2dp tight spacing, draw-phase selection insets (0.86f scale + 14dp corner rounding), and `sharedBounds` transitions.
 - **`app/src/main/kotlin/org/fossify/gallery/ui/home/AlbumsGrid.kt`**: Two-column album folder grid with negative bucket ID proxying to avoid thumbnail cache collisions.
@@ -491,10 +492,12 @@ Lumina/
 - **`app/src/main/kotlin/org/fossify/gallery/ui/home/GalleryViewModel.kt`**: `AndroidViewModel` owning library UI state, album filtering, search, selection, and MediaStore mutations.
 
 ### 7. Fullscreen Viewer
-- **`app/src/main/kotlin/org/fossify/gallery/ui/viewer/LuminaViewer.kt`**: `HorizontalPager` container with `WindowInsetsControllerCompat` synchronization, dark system bar icon enforcement, single hoisted `PlayerPool`, and swipe-away video pausing.
-- **`app/src/main/kotlin/org/fossify/gallery/ui/viewer/ViewerTopBar.kt`**: Gradient-backed top action bar with back button, media title, and overflow menu (Set as wallpaper, Open with, Use as).
-- **`app/src/main/kotlin/org/fossify/gallery/ui/viewer/PhotoPage.kt`**: Deep-zoom tiling, immediate thumbnail preview display during full bitmap decode, and `AnimatedImageDrawable` gesture dispatch.
-- **`app/src/main/kotlin/org/fossify/gallery/ui/viewer/VideoPage.kt`**: `androidx.media3.ui.compose.PlayerSurface` (`SURFACE_TYPE_TEXTURE_VIEW`) driven by hoisted `PlayerPool`.
+- **`app/src/main/kotlin/org/fossify/gallery/ui/viewer/LuminaViewer.kt`**: `HorizontalPager` container with `WindowInsetsControllerCompat` synchronization, dark system bar icon enforcement, single hoisted `PlayerPool`, draw-phase Crop ↔ Fit Canvas overlay morph, predictive-back tile snapping, and swipe-away video pausing.
+- **`app/src/main/kotlin/org/fossify/gallery/ui/viewer/ViewerTopBar.kt`**: Gradient-backed top action bar with back button, media title, and overflow menu (Favorite, Details, Set as wallpaper, Open with, Use as).
+- **`app/src/main/kotlin/org/fossify/gallery/ui/viewer/VideoTransportPill.kt`**: Slim 44dp floating transport pill sitting 8dp above the Viewer bottom dock for video playback (Play/Pause, custom Canvas scrubber, duration, Mute).
+- **`app/src/main/kotlin/org/fossify/gallery/ui/viewer/AddToAlbumSheet.kt`**: Modal bottom sheet for the + Add to dock button (pick existing album or create a new one).
+- **`app/src/main/kotlin/org/fossify/gallery/ui/viewer/PhotoPage.kt`**: Deep-zoom tiling, immediate thumbnail preview display during full bitmap decode, decoded full ImageBitmap reporting for crisp close morphs, and `AnimatedImageDrawable` gesture dispatch.
+- **`app/src/main/kotlin/org/fossify/gallery/ui/viewer/VideoPage.kt`**: `androidx.media3.ui.compose.PlayerSurface` (`SURFACE_TYPE_SURFACE_VIEW`) driven by hoisted `PlayerPool`.
 - **`app/src/main/kotlin/org/fossify/gallery/ui/viewer/ViewerViewModel.kt`**: State holder for viewer index, chrome visibility, metadata sheet, and favorite/trash actions.
 
 ### 8. Technical Details Bottom Sheet
@@ -509,6 +512,7 @@ Lumina/
 - **`app/src/main/kotlin/org/fossify/gallery/ui/data/LuminaMediaRepository.kt`**: Reactive MediaStore querying with debounced `ContentObserver` and native scoped `createTrashRequest`, `createDeleteRequest`, and `createFavoriteRequest`.
 
 ### 10. Native Graphics & Video Engines
+- **`app/src/main/kotlin/org/fossify/gallery/engine/share/RecentShareStore.kt`**: Passive Sharesheet target recorder (`ShareTargetReceiver` via `EXTRA_CHOSEN_COMPONENT`), package manager query seeder, and cached `ImageBitmap` icon provider for the swipe-up Smart Share FAB.
 - **`app/src/main/kotlin/org/fossify/gallery/engine/image/NativeThumbnailLoader.kt`**: Fast hardware thumbnail loading via `ContentResolver.loadThumbnail` with bounded LRU memory caching and cooperative coroutine cancellation.
 - **`app/src/main/kotlin/org/fossify/gallery/engine/image/NativeImageDecoder.kt`**: Native `ImageDecoder` pipeline decoding hardware bitmaps and animated drawables (`AnimatedImageDrawable` for GIF/WebP/APNG).
 - **`app/src/main/kotlin/org/fossify/gallery/engine/image/NativeTileRegionEngine.kt`**: Deep-zoom tile engine using `BitmapRegionDecoder` on Compose `Canvas` for pan/pinch zooming (1x to 8x) without memory spikes.

@@ -7,6 +7,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -34,6 +37,9 @@ import org.fossify.gallery.models.Medium
 @Composable
 fun ViewerTopBar(
     medium: Medium,
+    isFavorite: Boolean,
+    onFavoriteToggle: () -> Unit,
+    onDetailsClick: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -85,8 +91,11 @@ fun ViewerTopBar(
 
                     ViewerOverflowMenu(
                         medium = medium,
+                        isFavorite = isFavorite,
                         expanded = isMenuOpen,
                         onDismiss = { isMenuOpen = false },
+                        onFavoriteToggle = onFavoriteToggle,
+                        onDetailsClick = onDetailsClick,
                         context = context
                     )
                 }
@@ -101,14 +110,45 @@ fun ViewerTopBar(
 @Composable
 fun ViewerOverflowMenu(
     medium: Medium,
+    isFavorite: Boolean,
     expanded: Boolean,
     onDismiss: () -> Unit,
+    onFavoriteToggle: () -> Unit,
+    onDetailsClick: () -> Unit,
     context: Context
 ) {
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss
     ) {
+        DropdownMenuItem(
+            leadingIcon = {
+                Icon(
+                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    contentDescription = null
+                )
+            },
+            text = { Text(if (isFavorite) "Remove from favorites" else "Add to favorites") },
+            onClick = {
+                onDismiss()
+                onFavoriteToggle()
+            }
+        )
+
+        DropdownMenuItem(
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = null
+                )
+            },
+            text = { Text("Details") },
+            onClick = {
+                onDismiss()
+                onDetailsClick()
+            }
+        )
+
         if (!medium.isVideo) {
             DropdownMenuItem(
                 text = { Text("Set as wallpaper") },

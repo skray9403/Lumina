@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -35,7 +36,9 @@ fun PhotoPage(
     onSingleTap: () -> Unit = {},
     onEdgeSwipeHandoff: (Boolean) -> Unit = {},
     onVerticalDismissDrag: (Float) -> Unit = {},
-    onVerticalDismissEnd: (Float) -> Unit = {}
+    onVerticalDismissEnd: (Float) -> Unit = {},
+    onSwipeUpDetails: () -> Unit = {},
+    onBitmapReady: (Long, ImageBitmap) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val containerSize = LocalWindowInfo.current.containerSize
@@ -49,11 +52,15 @@ fun PhotoPage(
 
     LaunchedEffect(medium.uri, maxTargetPx) {
         isLoading = true
-        decodedResult = NativeImageDecoder.decodeImage(
+        val decoded = NativeImageDecoder.decodeImage(
             contentResolver = context.contentResolver,
             uri = medium.uri,
             maxDimensionPx = maxTargetPx
         )
+        decodedResult = decoded
+        if (decoded is DecodedImageResult.Static) {
+            onBitmapReady(medium.id, decoded.bitmap)
+        }
         isLoading = false
     }
 
@@ -69,7 +76,8 @@ fun PhotoPage(
                     onSingleTap = onSingleTap,
                     onEdgeSwipeHandoff = onEdgeSwipeHandoff,
                     onVerticalDismissDrag = onVerticalDismissDrag,
-                    onVerticalDismissEnd = onVerticalDismissEnd
+                    onVerticalDismissEnd = onVerticalDismissEnd,
+                    onSwipeUpDetails = onSwipeUpDetails
                 )
             }
 

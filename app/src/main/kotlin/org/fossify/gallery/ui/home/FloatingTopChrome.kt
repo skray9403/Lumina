@@ -4,12 +4,9 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -37,35 +34,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.fossify.gallery.ui.theme.LuminaMotion
+import org.fossify.gallery.ui.theme.LuminaPillTokens
 import org.fossify.gallery.ui.theme.pressScale
-
-private enum class TopChromeMode {
-    FLOATING_PILLS,
-    SEARCH,
-    SELECTION
-}
+import org.fossify.gallery.ui.theme.rememberLuminaPillTokens
 
 @Composable
 fun FloatingTopChrome(
-    gridState: LazyGridState,
+    gridState: LazyGridState?,
     indexToDatePill: List<String>,
-    selectedTab: GalleryTab,
+    staticTitle: String?,
     isMultiSelectMode: Boolean,
     selectedCount: Int,
-    isSearchActive: Boolean,
-    searchQuery: String,
-    activeAlbumName: String?,
     columnCount: Int,
     showConfirmPick: Boolean,
-    onQueryChange: (String) -> Unit,
-    onCloseSearch: () -> Unit,
-    onAlbumBackClick: () -> Unit,
+    onBackClick: (() -> Unit)? = null,
     onColumnCountChange: (Int) -> Unit,
     onRefresh: () -> Unit,
     onClearSelection: () -> Unit,
@@ -73,48 +60,35 @@ fun FloatingTopChrome(
     onConfirmPick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val mode = when {
-        isMultiSelectMode -> TopChromeMode.SELECTION
-        isSearchActive -> TopChromeMode.SEARCH
-        else -> TopChromeMode.FLOATING_PILLS
-    }
+    val tokens = rememberLuminaPillTokens()
 
     AnimatedContent(
-        targetState = mode,
+        targetState = isMultiSelectMode,
         transitionSpec = {
             fadeIn(LuminaMotion.throughZeroEnter) togetherWith
                 fadeOut(LuminaMotion.throughZeroExit)
         },
-        label = "top_chrome_mode",
+        label = "top_chrome_selection_swap",
         modifier = modifier
             .fillMaxWidth()
-            .height(52.dp)
-    ) { target ->
-        when (target) {
-            TopChromeMode.SELECTION -> SelectionTopBar(
+            .height(48.dp)
+    ) { selecting ->
+        if (selecting) {
+            SelectionTopBar(
                 selectedCount = selectedCount,
                 showConfirmPick = showConfirmPick,
                 onClearSelection = onClearSelection,
                 onSelectAll = onSelectAll,
                 onConfirmPick = onConfirmPick
             )
-
-            TopChromeMode.SEARCH -> SearchBarOverlay(
-                searchQuery = searchQuery,
-                onQueryChange = onQueryChange,
-                activeAlbumName = activeAlbumName,
-                onAlbumBackClick = if (activeAlbumName != null) onAlbumBackClick else null,
-                onCloseClick = onCloseSearch,
-                autoFocus = true
-            )
-
-            TopChromeMode.FLOATING_PILLS -> FloatingDateAndMenuBar(
+        } else {
+            FloatingPillsRow(
                 gridState = gridState,
                 indexToDatePill = indexToDatePill,
-                selectedTab = selectedTab,
-                activeAlbumName = activeAlbumName,
+                staticTitle = staticTitle,
                 columnCount = columnCount,
-                onAlbumBackClick = onAlbumBackClick,
+                tokens = tokens,
+                onBackClick = onBackClick,
                 onColumnCountChange = onColumnCountChange,
                 onRefresh = onRefresh
             )
@@ -123,93 +97,94 @@ fun FloatingTopChrome(
 }
 
 @Composable
-private fun FloatingDateAndMenuBar(
-    gridState: LazyGridState,
+private fun FloatingPillsRow(
+    gridState: LazyGridState?,
     indexToDatePill: List<String>,
-    selectedTab: GalleryTab,
-    activeAlbumName: String?,
+    staticTitle: String?,
     columnCount: Int,
-    onAlbumBackClick: () -> Unit,
+    tokens: LuminaPillTokens,
+    onBackClick: (() -> Unit)?,
     onColumnCountChange: (Int) -> Unit,
     onRefresh: () -> Unit
 ) {
-    // High-contrast dark translucent pill matching full-bleed photo grid aesthetic
-    val pillContainer = Color(0xFF141518).copy(alpha = 0.88f)
-    val pillContent = Color(0xFFF3F4F6)
-
     var menuExpanded by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(52.dp)
+            .height(48.dp)
     ) {
-        // Left: Album back-chip only when drilled into an album
-        if (activeAlbumName != null && selectedTab == GalleryTab.PHOTOS) {
+        // Left: Back button when inside an album overlay
+        if (onBackClick != null) {
             val backInteraction = remember { MutableInteractionSource() }
             Surface(
                 shape = CircleShape,
-                color = pillContainer,
-                shadowElevation = 4.dp,
+                color = tokens.containerColor,
+                border = tokens.border,
+                shadowElevation = tokens.shadowElevation,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
                     .size(44.dp)
                     .pressScale(backInteraction, pressedScale = 0.90f)
-                    .clip(CircleShape)
-                    .clickable(
-                        interactionSource = backInteraction,
-                        indication = ripple(bounded = true),
-                        role = Role.Button,
-                        onClick = onAlbumBackClick
-                    )
             ) {
-                Box(contentAlignment = Alignment.Center) {
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = backInteraction,
+                            indication = ripple(bounded = true),
+                            role = Role.Button,
+                            onClick = onBackClick
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back to albums",
-                        tint = pillContent,
+                        contentDescription = "Back",
+                        tint = tokens.contentColor,
                         modifier = Modifier.size(20.dp)
                     )
                 }
             }
         }
 
-        // Center: Sticky floating date pill (or "Albums" / album title)
-        // derivedStateOf is scoped strictly to this composable so scrolling never recomposes parent
-        StickyCenterPill(
+        // Center: Sticky floating date pill (replaces all in-grid date headers)
+        StickyCenterDatePill(
             gridState = gridState,
             indexToDatePill = indexToDatePill,
-            selectedTab = selectedTab,
-            activeAlbumName = activeAlbumName,
-            containerColor = pillContainer,
-            contentColor = pillContent,
+            staticTitle = staticTitle,
+            tokens = tokens,
             modifier = Modifier.align(Alignment.Center)
         )
 
-        // Right: Floating circular overflow button (⋮)
+        // Right: Trailing circular overflow pill (⋮)
         Box(modifier = Modifier.align(Alignment.CenterEnd)) {
             val menuInteraction = remember { MutableInteractionSource() }
             Surface(
                 shape = CircleShape,
-                color = pillContainer,
-                shadowElevation = 4.dp,
+                color = tokens.containerColor,
+                border = tokens.border,
+                shadowElevation = tokens.shadowElevation,
                 modifier = Modifier
                     .size(44.dp)
                     .pressScale(menuInteraction, pressedScale = 0.90f)
-                    .clip(CircleShape)
-                    .clickable(
-                        interactionSource = menuInteraction,
-                        indication = ripple(bounded = true),
-                        role = Role.Button,
-                        onClick = { menuExpanded = true }
-                    )
             ) {
-                Box(contentAlignment = Alignment.Center) {
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = menuInteraction,
+                            indication = ripple(bounded = true),
+                            role = Role.Button,
+                            onClick = { menuExpanded = true }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(
                         imageVector = Icons.Default.MoreVert,
                         contentDescription = "Gallery options",
-                        tint = pillContent,
-                        modifier = Modifier.size(22.dp)
+                        tint = tokens.contentColor,
+                        modifier = Modifier.size(21.dp)
                     )
                 }
             }
@@ -251,24 +226,22 @@ private fun FloatingDateAndMenuBar(
 }
 
 @Composable
-private fun StickyCenterPill(
-    gridState: LazyGridState,
+private fun StickyCenterDatePill(
+    gridState: LazyGridState?,
     indexToDatePill: List<String>,
-    selectedTab: GalleryTab,
-    activeAlbumName: String?,
-    containerColor: Color,
-    contentColor: Color,
+    staticTitle: String?,
+    tokens: LuminaPillTokens,
     modifier: Modifier = Modifier
 ) {
-    val label by remember(gridState, indexToDatePill, selectedTab, activeAlbumName) {
+    val label by remember(gridState, indexToDatePill, staticTitle) {
         derivedStateOf {
             when {
-                selectedTab == GalleryTab.ALBUMS -> "Albums"
-                indexToDatePill.isNotEmpty() -> {
+                staticTitle != null && (gridState == null || gridState.firstVisibleItemIndex == 0) -> staticTitle
+                gridState != null && indexToDatePill.isNotEmpty() -> {
                     val idx = gridState.firstVisibleItemIndex.coerceIn(0, indexToDatePill.lastIndex)
                     indexToDatePill[idx]
                 }
-                activeAlbumName != null -> activeAlbumName
+                staticTitle != null -> staticTitle
                 else -> ""
             }
         }
@@ -277,8 +250,9 @@ private fun StickyCenterPill(
     if (label.isNotEmpty()) {
         Surface(
             shape = RoundedCornerShape(24.dp),
-            color = containerColor,
-            shadowElevation = 4.dp,
+            color = tokens.containerColor,
+            border = tokens.border,
+            shadowElevation = tokens.shadowElevation,
             modifier = modifier.height(42.dp)
         ) {
             Box(
@@ -289,7 +263,7 @@ private fun StickyCenterPill(
                     text = label,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Medium,
-                    color = contentColor,
+                    color = tokens.contentColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )

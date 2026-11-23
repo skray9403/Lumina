@@ -9,6 +9,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -45,31 +47,36 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.ui.navigation.DockScrollState
+import org.fossify.gallery.ui.theme.BottomEdgeFeatherFade
 import org.fossify.gallery.ui.theme.LuminaMotion
 import org.fossify.gallery.ui.theme.TopEdgeFeatherFade
 
 @Composable
 fun LuminaHomeScreen(
     viewModel: GalleryViewModel,
-    gridState: LazyGridState,
+    photosGridState: LazyGridState,
+    albumGridState: LazyGridState,
     dockScrollState: DockScrollState,
-    tileBounds: MutableMap<Long, Rect>,
+    photosTileBounds: MutableMap<Long, Rect>,
+    albumTileBounds: MutableMap<Long, Rect>,
     hiddenMediaId: Long?,
-    onMediaClick: (Medium, Rect?) -> Unit,
+    isViewerOpen: Boolean,
+    onMediaClick: (Medium, Rect?, Boolean) -> Unit,
     modifier: Modifier = Modifier,
     pickerMode: Boolean = false,
     allowMultiple: Boolean = false,
     onConfirmPick: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var activeAlbumName by remember { mutableStateOf<String?>(null) }
 
     fun hasAnyMediaAccess(): Boolean {
         val fullImages = ContextCompat.checkSelfPermission(
@@ -117,23 +124,20 @@ fun LuminaHomeScreen(
         }
     }
 
-    LaunchedEffect(state.selectedTab) {
-        if (state.selectedTab == GalleryTab.ALBUMS) {
-            activeAlbumName = null
-        }
-    }
-
-    BackHandler(enabled = state.isMultiSelectMode) {
+    // Back priority: Viewer -> Multi-select -> Search -> Album Overlay (Predictive) -> Albums tab -> Photos tab
+    BackHandler(enabled = !isViewerOpen && state.isMultiSelectMode) {
         viewModel.clearSelection()
     }
 
-    BackHandler(enabled = !state.isMultiSelectMode && state.isSearchActive) {
+    BackHandler(enabled = !isViewerOpen && !state.isMultiSelectMode && state.isSearchActive) {
         viewModel.setSearchActive(false)
     }
 
-    BackHandler(enabled = !state.isMultiSelectMode && !state.isSearchActive && activeAlbumName != null) {
-        activeAlbumName = null
-        viewModel.setTab(GalleryTab.ALBUMS)
+    BackHandler(
+        enabled = !isViewerOpen && !state.isMultiSelectMode && !state.isSearchActive &&
+            state.activeAlbumId == null && state.selectedTab == GalleryTab.ALBUMS
+    ) {
+        viewModel.setTab(GalleryTab.PHOTOS)
     }
 
     val actionLauncher = rememberLauncherForActivityResult(
@@ -151,32 +155,38 @@ fun LuminaHomeScreen(
 
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-
     val gridContentPadding = PaddingValues(
-        top = statusBarTop + 60.dp,
+        top = statusBarTop + 62.dp,
         bottom = navBarBottom + 96.dp
     )
+
+    val slideShiftPx = with(density) { 24.dp.roundToPx() }
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // 1. Full-bleed scrolling feed
+        // 1. Directional shared-axis Photos <-> Albums transition
         AnimatedContent(
             targetState = state.selectedTab,
             transitionSpec = {
-                fadeIn(LuminaMotion.throughZeroEnter) togetherWith
-                    fadeOut(LuminaMotion.throughZeroExit)
+                val toAlbums = targetState == GalleryTab.ALBUMS
+                val enterDir = if (toAlbums) slideShiftPx else -slideShiftPx
+                val exitDir = if (toAlbums) -slideShiftPx else slideShiftPx
+                (slideInHorizontally(LuminaMotion.tabSlideSpec) { enterDir } +
+                    fadeIn(LuminaMotion.tabFadeIn)) togetherWith
+                    (slideOutHorizontally(LuminaMotion.tabSlideSpec) { exitDir } +
+                        fadeOut(LuminaMotion.tabFadeOut))
             },
-            label = "home_tab_content",
+            label = "home_tab_shared_axis",
             modifier = Modifier
                 .fillMaxSize()
                 .nestedScroll(dockScrollState.nestedScrollConnection)
         ) { tab ->
             when (tab) {
                 GalleryTab.PHOTOS -> {
-                    if (state.timelineSections.isEmpty()) {
+                    if (state.visibleMedia.isEmpty()) {
                         EmptyOrPermissionState(
                             hasPermission = hasMediaPermission,
                             onRequestPermission = ::requestPermissions,
@@ -184,14 +194,14 @@ fun LuminaHomeScreen(
                         )
                     } else {
                         MediaTimelineGrid(
-                            sections = state.timelineSections,
+                            media = state.visibleMedia,
                             columnCount = state.columnCount,
-                            gridState = gridState,
+                            gridState = photosGridState,
                             selectedIds = state.selectedIds,
                             isMultiSelectMode = state.isMultiSelectMode,
-                            hiddenMediaId = hiddenMediaId,
-                            tileBounds = tileBounds,
-                            onMediaClick = onMediaClick,
+                            hiddenMediaId = if (state.activeAlbumId == null) hiddenMediaId else null,
+                            tileBounds = photosTileBounds,
+                            onMediaClick = { medium, rect -> onMediaClick(medium, rect, false) },
                             onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
                             contentPadding = gridContentPadding
                         )
@@ -201,50 +211,72 @@ fun LuminaHomeScreen(
                 GalleryTab.ALBUMS -> {
                     AlbumsGrid(
                         albums = state.albums,
-                        onAlbumClick = { album ->
-                            activeAlbumName = album.name
-                            viewModel.filterByAlbum(album.bucketId)
-                        },
+                        onAlbumClick = { album -> viewModel.openAlbum(album) },
                         contentPadding = gridContentPadding
                     )
                 }
             }
         }
 
-        // 2. Subtle dark top scrim so status bar icons remain legible over bright photos
+        // 2. Theme-matched top & bottom feather fades (ChatGPT-style non-glass integration)
         TopEdgeFeatherFade(
-            height = statusBarTop + 64.dp,
+            height = statusBarTop + 68.dp,
             modifier = Modifier.align(Alignment.TopCenter)
         )
 
-        // 3. Reference floating top chrome (centered date pill + trailing ⋮, or Search / Selection)
-        FloatingTopChrome(
-            gridState = gridState,
-            indexToDatePill = state.indexToDatePill,
-            selectedTab = state.selectedTab,
-            isMultiSelectMode = state.isMultiSelectMode,
-            selectedCount = state.selectedIds.size,
-            isSearchActive = state.isSearchActive,
-            searchQuery = state.searchQuery,
-            activeAlbumName = activeAlbumName,
-            columnCount = state.columnCount,
-            showConfirmPick = pickerMode && allowMultiple,
-            onQueryChange = { viewModel.setSearchQuery(it) },
-            onCloseSearch = { viewModel.setSearchActive(false) },
-            onAlbumBackClick = {
-                activeAlbumName = null
-                viewModel.setTab(GalleryTab.ALBUMS)
-            },
-            onColumnCountChange = { viewModel.setColumnCount(it) },
-            onRefresh = { viewModel.refresh() },
-            onClearSelection = { viewModel.clearSelection() },
-            onSelectAll = { viewModel.selectAll() },
-            onConfirmPick = onConfirmPick,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 6.dp)
+        BottomEdgeFeatherFade(
+            height = navBarBottom + 98.dp,
+            modifier = Modifier.align(Alignment.BottomCenter)
         )
+
+        // 3. Top floating pills (when not inside Album overlay)
+        if (state.activeAlbumId == null) {
+            FloatingTopChrome(
+                gridState = if (state.selectedTab == GalleryTab.PHOTOS) photosGridState else null,
+                indexToDatePill = state.indexToDatePill,
+                staticTitle = if (state.selectedTab == GalleryTab.ALBUMS) "Albums" else null,
+                isMultiSelectMode = state.isMultiSelectMode,
+                selectedCount = state.selectedIds.size,
+                columnCount = state.columnCount,
+                showConfirmPick = pickerMode && allowMultiple,
+                onColumnCountChange = { viewModel.setColumnCount(it) },
+                onRefresh = { viewModel.refresh() },
+                onClearSelection = { viewModel.clearSelection() },
+                onSelectAll = { viewModel.selectAll() },
+                onConfirmPick = onConfirmPick,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+            )
+        }
+
+        // 4. Stacked Album Overlay with native Predictive Back revealing live AlbumsGrid underneath
+        if (state.activeAlbumId != null) {
+            AlbumDetailOverlay(
+                albumName = state.activeAlbumName ?: "Album",
+                media = state.albumMedia,
+                indexToDatePill = state.albumIndexToDatePill,
+                gridState = albumGridState,
+                dockScrollState = dockScrollState,
+                columnCount = state.columnCount,
+                selectedIds = state.selectedIds,
+                isMultiSelectMode = state.isMultiSelectMode,
+                hiddenMediaId = hiddenMediaId,
+                tileBounds = albumTileBounds,
+                showConfirmPick = pickerMode && allowMultiple,
+                enabledBack = !isViewerOpen && !state.isMultiSelectMode && !state.isSearchActive,
+                onMediaClick = { medium, rect -> onMediaClick(medium, rect, true) },
+                onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
+                onColumnCountChange = { viewModel.setColumnCount(it) },
+                onRefresh = { viewModel.refresh() },
+                onClearSelection = { viewModel.clearSelection() },
+                onSelectAll = { viewModel.selectAll() },
+                onConfirmPick = onConfirmPick,
+                onCloseComplete = { viewModel.closeAlbum() },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }
 
