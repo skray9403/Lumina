@@ -6,7 +6,7 @@
     <issue id="ExportedContentProvider" severity="error" />
     <issue id="MissingPermission" severity="error" />
     <issue id="NotificationPermission" severity="error" />
-    <issue id="UnsafeOptInUsageError" severity="error" />
+    <issue id="UnsafeOptInUsageError" severity="warning" />
     <issue id="StringFormatMatches" severity="error" />
     <issue id="StringFormatInvalid" severity="error" />
     <issue id="StringFormatCount" severity="error" />

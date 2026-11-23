@@ -16,6 +16,7 @@ import androidx.media3.exoplayer.ExoPlayer
  * in HorizontalPager, auto-pausing on page transitions and lifecycle ON_PAUSE,
  * and releasing on ON_DESTROY.
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerPool(private val context: Context) {
     private var currentPlayer: ExoPlayer? = null
     private var currentUri: Uri? = null

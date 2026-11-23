@@ -20,6 +20,7 @@ import org.fossify.gallery.models.Medium
  * Employs androidx.media3.ui.compose.PlayerSurface with SURFACE_TYPE_TEXTURE_VIEW,
  * bound to the lifecycle-aware PlayerPool, with Compose gesture overlay for scrub/volume/brightness.
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun VideoPage(
     medium: Medium,
