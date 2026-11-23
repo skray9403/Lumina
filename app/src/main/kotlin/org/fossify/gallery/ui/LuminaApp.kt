@@ -297,13 +297,3 @@ private fun shareMediaItems(context: Context, items: List<Medium>) {
     }
     context.startActivity(Intent.createChooser(shareIntent, "Share with"))
 }
-
-Optional Cleanup for Antigravity (Dead Legacy Bloat)
-Delete these unused Fossify leftovers to cut APK size and build time:
- * app/src/main/res/mipmap-*/ic_launcher_*.webp (all 19 colored launcher variants across mdpi–xxxhdpi; keep ic_launcher.xml + adaptive foreground/background/monochrome).
- * app/src/main/res/drawable-*/ic_panorama_outline.webp, sample_logo.webp, img_widget_preview.webp, and unused ic_*_vector.xml files not referenced by the manifest/launcher.
- * app/src/main/res/values-*/strings.xml if you aren't localizing Compose strings yet (every UI string is currently hardcoded in English anyway).
-</USER_REQUEST>
-<ADDITIONAL_METADATA>
-The current local time is: 2026-11-23T22:13:30+05:30.
-</ADDITIONAL_METADATA>
