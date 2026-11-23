@@ -1,0 +1,86 @@
+name: Lumina Compose CI
+
+on:
+  push:
+    branches:
+      - rewrite/compose-expressive
+      - main
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - "README.md"
+      - "CHANGELOG.md"
+      - "docs/**"
+      - "fastlane/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: folio-compose-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Build Lumina FOSS debug variant
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android 17 platform and build tools
+        run: sdkmanager "platforms;android-37.1" "build-tools;37.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build the FOSS variant and run baseline checks
+        run: |
+          chmod +x ./gradlew
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace --console=plain \
+            :app:assembleDebug \
+            :app:testDebugUnitTest \
+            :app:lintDebug 2>&1 | tee gradle-build.log
+
+      - name: Upload Lumina debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumina-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Gradle build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumina-gradle-build-log
+          path: gradle-build.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload verification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumina-verification-reports
+          path: |
+            app/build/reports/**
+            app/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14
+# Lumina gallery CI build
