@@ -122,7 +122,8 @@ fun NativeAnimatedCanvas(
 
     Canvas(modifier = modifier.fillMaxSize()) {
         // Read frameTick to trigger redraw
-        val _ = frameTick
+        @Suppress("UNUSED_VARIABLE")
+        val currentTick = frameTick
 
         val canvasWidth = size.width
         val canvasHeight = size.height
