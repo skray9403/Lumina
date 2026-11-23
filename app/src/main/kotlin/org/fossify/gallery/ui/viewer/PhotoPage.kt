@@ -4,7 +4,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -17,28 +18,42 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalWindowInfo
 import org.fossify.gallery.engine.image.DecodedImageResult
 import org.fossify.gallery.engine.image.NativeAnimatedCanvas
 import org.fossify.gallery.engine.image.NativeImageDecoder
 import org.fossify.gallery.engine.image.NativeTiledImageViewer
 import org.fossify.gallery.engine.image.rememberThumbnail
 import org.fossify.gallery.models.Medium
+import kotlin.math.max
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PhotoPage(
     medium: Medium,
     modifier: Modifier = Modifier,
     onSingleTap: () -> Unit = {},
-    onEdgeSwipeHandoff: (Boolean) -> Unit = {}
+    onEdgeSwipeHandoff: (Boolean) -> Unit = {},
+    onVerticalDismissDrag: (Float) -> Unit = {},
+    onVerticalDismissEnd: (Float) -> Unit = {}
 ) {
     val context = LocalContext.current
-    val previewThumbnail = rememberThumbnail(medium, sizePx = 360)
+    val containerSize = LocalWindowInfo.current.containerSize
+    val maxTargetPx = remember(containerSize) {
+        max(containerSize.width, containerSize.height).coerceIn(1080, 2560)
+    }
+
+    val previewThumbnail = rememberThumbnail(medium)
     var decodedResult by remember(medium.uri) { mutableStateOf<DecodedImageResult?>(null) }
     var isLoading by remember(medium.uri) { mutableStateOf(true) }
 
-    LaunchedEffect(medium.uri) {
+    LaunchedEffect(medium.uri, maxTargetPx) {
         isLoading = true
-        decodedResult = NativeImageDecoder.decodeImage(context.contentResolver, medium.uri)
+        decodedResult = NativeImageDecoder.decodeImage(
+            contentResolver = context.contentResolver,
+            uri = medium.uri,
+            maxDimensionPx = maxTargetPx
+        )
         isLoading = false
     }
 
@@ -47,13 +62,17 @@ fun PhotoPage(
             is DecodedImageResult.Static -> {
                 NativeTiledImageViewer(
                     baseBitmap = result.bitmap,
-                    imageWidth = result.width,
-                    imageHeight = result.height,
+                    imageWidth = result.displayWidth,
+                    imageHeight = result.displayHeight,
+                    orientationDegrees = medium.orientation,
                     imageUri = medium.uri,
                     onSingleTap = onSingleTap,
-                    onEdgeSwipeHandoff = onEdgeSwipeHandoff
+                    onEdgeSwipeHandoff = onEdgeSwipeHandoff,
+                    onVerticalDismissDrag = onVerticalDismissDrag,
+                    onVerticalDismissEnd = onVerticalDismissEnd
                 )
             }
+
             is DecodedImageResult.Animated -> {
                 NativeAnimatedCanvas(
                     drawable = result.drawable,
@@ -64,6 +83,7 @@ fun PhotoPage(
                         }
                 )
             }
+
             null -> {
                 if (previewThumbnail != null) {
                     Image(
@@ -77,7 +97,7 @@ fun PhotoPage(
                             }
                     )
                 } else if (isLoading) {
-                    CircularProgressIndicator(color = Color.White.copy(alpha = 0.7f))
+                    LoadingIndicator(color = Color.White.copy(alpha = 0.85f))
                 }
             }
         }

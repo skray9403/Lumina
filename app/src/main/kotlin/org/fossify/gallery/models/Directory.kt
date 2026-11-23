@@ -10,5 +10,7 @@ data class Directory(
     val coverUri: Uri,
     val mediaCount: Int,
     val latestDateMs: Long = 0L,
-    val relativePath: String = ""
+    val relativePath: String = "",
+    val coverMediumId: Long = 0L,
+    val coverDateModifiedMs: Long = 0L
 )

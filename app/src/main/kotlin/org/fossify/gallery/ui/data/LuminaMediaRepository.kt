@@ -1,16 +1,15 @@
 package org.fossify.gallery.ui.data
 
-import android.app.Activity
 import android.content.ContentResolver
 import android.content.Context
 import android.database.ContentObserver
 import android.net.Uri
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import androidx.activity.result.IntentSenderRequest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -23,12 +22,10 @@ import org.fossify.gallery.models.Medium
 
 /**
  * Single source of truth for MediaStore operations on Android 13+ (API 33+).
- *
- * Exposes a reactive callbackFlow ContentObserver for real-time library updates
- * and handles native scoped IntentSender requests (delete, trash, favorite).
  */
-class LuminaMediaRepository(private val context: Context) {
-    private val contentResolver: ContentResolver = context.contentResolver
+@OptIn(FlowPreview::class)
+class LuminaMediaRepository(context: Context) {
+    private val contentResolver: ContentResolver = context.applicationContext.contentResolver
 
     private val projection = arrayOf(
         MediaStore.Files.FileColumns._ID,
@@ -48,9 +45,6 @@ class LuminaMediaRepository(private val context: Context) {
         MediaStore.MediaColumns.IS_FAVORITE
     )
 
-    /**
-     * Reactive flow emitting fresh media lists on any MediaStore change, debounced to 250ms.
-     */
     val mediaFlow: Flow<List<Medium>> = callbackFlow {
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean, uri: Uri?) {
@@ -70,10 +64,9 @@ class LuminaMediaRepository(private val context: Context) {
                 observer
             )
         } catch (_: Exception) {
-            // Permission might not be granted yet
+            // Permission may not be granted yet
         }
 
-        // Initial emission
         trySend(Unit)
 
         awaitClose {
@@ -87,9 +80,6 @@ class LuminaMediaRepository(private val context: Context) {
         .map { queryAllMedia() }
         .flowOn(Dispatchers.IO)
 
-    /**
-     * Queries all images and videos from external MediaStore with minimal columns.
-     */
     suspend fun queryAllMedia(): List<Medium> = withContext(Dispatchers.IO) {
         val mediaList = mutableListOf<Medium>()
         val queryUri = MediaStore.Files.getContentUri("external")
@@ -143,8 +133,8 @@ class LuminaMediaRepository(private val context: Context) {
                     val relativePath = cursor.getString(pathCol) ?: ""
                     val isFavorite = if (favCol != -1) cursor.getInt(favCol) == 1 else false
                     val isAnimated = mime.contains("gif", ignoreCase = true) ||
-                            mime.contains("webp", ignoreCase = true) ||
-                            mime.contains("apng", ignoreCase = true)
+                        mime.contains("webp", ignoreCase = true) ||
+                        mime.contains("apng", ignoreCase = true)
 
                     mediaList.add(
                         Medium(
@@ -170,15 +160,11 @@ class LuminaMediaRepository(private val context: Context) {
                 }
             }
         } catch (_: Exception) {
-            // MediaStore query error or permissions not granted yet
         }
 
         mediaList
     }
 
-    /**
-     * Extracts distinct directory/album buckets from a flat media list.
-     */
     fun extractDirectories(media: List<Medium>): List<Directory> {
         val grouped = media.groupBy { it.bucketId }
         return grouped.mapNotNull { (bucketId, items) ->
@@ -189,23 +175,24 @@ class LuminaMediaRepository(private val context: Context) {
                 coverUri = first.uri,
                 mediaCount = items.size,
                 latestDateMs = items.maxOfOrNull { it.dateTakenMs } ?: 0L,
-                relativePath = first.relativePath
+                relativePath = first.relativePath,
+                coverMediumId = first.id,
+                coverDateModifiedMs = first.dateModifiedMs
             )
         }.sortedByDescending { it.latestDateMs }
     }
 
-    // MediaStore scoped action requests
-    fun createDeleteRequest(uris: List<Uri>): IntentSenderRequest? {
+    fun createDeleteRequest(uris: List<Uri>): IntentSenderRequest {
         val pendingIntent = MediaStore.createDeleteRequest(contentResolver, uris)
         return IntentSenderRequest.Builder(pendingIntent.intentSender).build()
     }
 
-    fun createTrashRequest(uris: List<Uri>, isTrash: Boolean): IntentSenderRequest? {
+    fun createTrashRequest(uris: List<Uri>, isTrash: Boolean): IntentSenderRequest {
         val pendingIntent = MediaStore.createTrashRequest(contentResolver, uris, isTrash)
         return IntentSenderRequest.Builder(pendingIntent.intentSender).build()
     }
 
-    fun createFavoriteRequest(uris: List<Uri>, isFavorite: Boolean): IntentSenderRequest? {
+    fun createFavoriteRequest(uris: List<Uri>, isFavorite: Boolean): IntentSenderRequest {
         val pendingIntent = MediaStore.createFavoriteRequest(contentResolver, uris, isFavorite)
         return IntentSenderRequest.Builder(pendingIntent.intentSender).build()
     }

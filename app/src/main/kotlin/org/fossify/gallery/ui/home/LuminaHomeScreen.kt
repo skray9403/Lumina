@@ -7,9 +7,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibilityScope
-import androidx.compose.animation.ExperimentalSharedTransitionApi
-import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -22,13 +19,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
@@ -45,8 +42,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -55,14 +54,14 @@ import org.fossify.gallery.ui.navigation.DockScrollState
 import org.fossify.gallery.ui.theme.LuminaMotion
 import org.fossify.gallery.ui.theme.TopEdgeFeatherFade
 
-@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun LuminaHomeScreen(
     viewModel: GalleryViewModel,
+    gridState: LazyGridState,
     dockScrollState: DockScrollState,
-    sharedTransitionScope: SharedTransitionScope,
-    animatedVisibilityScope: AnimatedVisibilityScope,
-    onMediaClick: (Medium) -> Unit,
+    tileBounds: MutableMap<Long, Rect>,
+    hiddenMediaId: Long?,
+    onMediaClick: (Medium, Rect?) -> Unit,
     modifier: Modifier = Modifier,
     pickerMode: Boolean = false,
     allowMultiple: Boolean = false,
@@ -71,59 +70,72 @@ fun LuminaHomeScreen(
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var activeAlbumName by remember { mutableStateOf<String?>(null) }
-    var hasMediaPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.READ_MEDIA_IMAGES
-            ) == PackageManager.PERMISSION_GRANTED
-        )
+
+    fun hasAnyMediaAccess(): Boolean {
+        val fullImages = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.READ_MEDIA_IMAGES
+        ) == PackageManager.PERMISSION_GRANTED
+        val fullVideo = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.READ_MEDIA_VIDEO
+        ) == PackageManager.PERMISSION_GRANTED
+        val partial = Build.VERSION.SDK_INT >= 34 && ContextCompat.checkSelfPermission(
+            context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+        ) == PackageManager.PERMISSION_GRANTED
+        return fullImages || fullVideo || partial
     }
 
-    // API 33+ granular runtime permission request
+    var hasMediaPermission by remember { mutableStateOf(hasAnyMediaAccess()) }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { perms ->
         val granted = perms[Manifest.permission.READ_MEDIA_IMAGES] == true ||
             perms[Manifest.permission.READ_MEDIA_VIDEO] == true ||
             (Build.VERSION.SDK_INT >= 34 && perms[Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED] == true)
-        hasMediaPermission = granted
-        if (granted) {
+        hasMediaPermission = granted || hasAnyMediaAccess()
+        if (hasMediaPermission) {
             viewModel.refresh()
         }
     }
 
+    fun requestPermissions() {
+        val perms = buildList {
+            add(Manifest.permission.READ_MEDIA_IMAGES)
+            add(Manifest.permission.READ_MEDIA_VIDEO)
+            if (Build.VERSION.SDK_INT >= 34) {
+                add(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+            }
+        }
+        permissionLauncher.launch(perms.toTypedArray())
+    }
+
     LaunchedEffect(Unit) {
-        val permissions = mutableListOf(
-            Manifest.permission.READ_MEDIA_IMAGES,
-            Manifest.permission.READ_MEDIA_VIDEO
-        )
-        if (Build.VERSION.SDK_INT >= 34) {
-            permissions.add(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
-        }
-        val needsRequest = permissions.any { perm ->
-            ContextCompat.checkSelfPermission(context, perm) != PackageManager.PERMISSION_GRANTED
-        }
-        if (needsRequest) {
-            permissionLauncher.launch(permissions.toTypedArray())
+        if (!hasAnyMediaAccess()) {
+            requestPermissions()
         } else {
             hasMediaPermission = true
         }
     }
 
-    // Clear active album badge if user switches back to Albums tab
     LaunchedEffect(state.selectedTab) {
         if (state.selectedTab == GalleryTab.ALBUMS) {
             activeAlbumName = null
         }
     }
 
-    // Exit multi-select on system back gesture
     BackHandler(enabled = state.isMultiSelectMode) {
         viewModel.clearSelection()
     }
 
-    // MediaStore scoped action launcher (Delete, Trash, Favorite)
+    BackHandler(enabled = !state.isMultiSelectMode && state.isSearchActive) {
+        viewModel.setSearchActive(false)
+    }
+
+    BackHandler(enabled = !state.isMultiSelectMode && !state.isSearchActive && activeAlbumName != null) {
+        activeAlbumName = null
+        viewModel.setTab(GalleryTab.ALBUMS)
+    }
+
     val actionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) {
@@ -141,7 +153,7 @@ fun LuminaHomeScreen(
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
     val gridContentPadding = PaddingValues(
-        top = statusBarTop + 72.dp,
+        top = statusBarTop + 60.dp,
         bottom = navBarBottom + 96.dp
     )
 
@@ -154,8 +166,8 @@ fun LuminaHomeScreen(
         AnimatedContent(
             targetState = state.selectedTab,
             transitionSpec = {
-                fadeIn(animationSpec = LuminaMotion.contentEnter) togetherWith
-                    fadeOut(animationSpec = LuminaMotion.contentExit)
+                fadeIn(LuminaMotion.throughZeroEnter) togetherWith
+                    fadeOut(LuminaMotion.throughZeroExit)
             },
             label = "home_tab_content",
             modifier = Modifier
@@ -167,34 +179,25 @@ fun LuminaHomeScreen(
                     if (state.timelineSections.isEmpty()) {
                         EmptyOrPermissionState(
                             hasPermission = hasMediaPermission,
-                            onRequestPermission = {
-                                val permissions = mutableListOf(
-                                    Manifest.permission.READ_MEDIA_IMAGES,
-                                    Manifest.permission.READ_MEDIA_VIDEO
-                                )
-                                if (Build.VERSION.SDK_INT >= 34) {
-                                    permissions.add(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
-                                }
-                                permissionLauncher.launch(permissions.toTypedArray())
-                            },
+                            onRequestPermission = ::requestPermissions,
                             contentPadding = gridContentPadding
                         )
                     } else {
                         MediaTimelineGrid(
                             sections = state.timelineSections,
                             columnCount = state.columnCount,
+                            gridState = gridState,
                             selectedIds = state.selectedIds,
                             isMultiSelectMode = state.isMultiSelectMode,
-                            sharedTransitionScope = sharedTransitionScope,
-                            animatedVisibilityScope = animatedVisibilityScope,
+                            hiddenMediaId = hiddenMediaId,
+                            tileBounds = tileBounds,
                             onMediaClick = onMediaClick,
-                            onMediaLongClick = { medium ->
-                                viewModel.toggleSelection(medium.id)
-                            },
+                            onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
                             contentPadding = gridContentPadding
                         )
                     }
                 }
+
                 GalleryTab.ALBUMS -> {
                     AlbumsGrid(
                         albums = state.albums,
@@ -208,54 +211,40 @@ fun LuminaHomeScreen(
             }
         }
 
-        // 2. Top-edge feather fade over scrolling media
+        // 2. Subtle dark top scrim so status bar icons remain legible over bright photos
         TopEdgeFeatherFade(
-            height = statusBarTop + 88.dp,
-            surfaceColor = MaterialTheme.colorScheme.background,
+            height = statusBarTop + 64.dp,
             modifier = Modifier.align(Alignment.TopCenter)
         )
 
-        // 3. Fixed-height floating top chrome (zero vertical jump between Search and Selection)
-        Box(
+        // 3. Reference floating top chrome (centered date pill + trailing ⋮, or Search / Selection)
+        FloatingTopChrome(
+            gridState = gridState,
+            indexToDatePill = state.indexToDatePill,
+            selectedTab = state.selectedTab,
+            isMultiSelectMode = state.isMultiSelectMode,
+            selectedCount = state.selectedIds.size,
+            isSearchActive = state.isSearchActive,
+            searchQuery = state.searchQuery,
+            activeAlbumName = activeAlbumName,
+            columnCount = state.columnCount,
+            showConfirmPick = pickerMode && allowMultiple,
+            onQueryChange = { viewModel.setSearchQuery(it) },
+            onCloseSearch = { viewModel.setSearchActive(false) },
+            onAlbumBackClick = {
+                activeAlbumName = null
+                viewModel.setTab(GalleryTab.ALBUMS)
+            },
+            onColumnCountChange = { viewModel.setColumnCount(it) },
+            onRefresh = { viewModel.refresh() },
+            onClearSelection = { viewModel.clearSelection() },
+            onSelectAll = { viewModel.selectAll() },
+            onConfirmPick = onConfirmPick,
             modifier = Modifier
-                .fillMaxWidth()
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            AnimatedContent(
-                targetState = state.isMultiSelectMode,
-                transitionSpec = {
-                    fadeIn(animationSpec = LuminaMotion.contentEnter) togetherWith
-                        fadeOut(animationSpec = LuminaMotion.contentExit)
-                },
-                label = "top_chrome_swap"
-            ) { selecting ->
-                if (selecting) {
-                    SelectionTopBar(
-                        selectedCount = state.selectedIds.size,
-                        showConfirmPick = pickerMode && allowMultiple,
-                        onClearSelection = { viewModel.clearSelection() },
-                        onSelectAll = { viewModel.selectAll() },
-                        onConfirmPick = onConfirmPick
-                    )
-                } else {
-                    SearchBarOverlay(
-                        searchQuery = state.searchQuery,
-                        onQueryChange = { viewModel.setSearchQuery(it) },
-                        activeAlbumName = activeAlbumName,
-                        onAlbumBackClick = if (activeAlbumName != null) {
-                            {
-                                activeAlbumName = null
-                                viewModel.setTab(GalleryTab.ALBUMS)
-                            }
-                        } else {
-                            null
-                        }
-                    )
-                }
-            }
-        }
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+        )
     }
 }
 
@@ -295,7 +284,7 @@ private fun EmptyOrPermissionState(
                     text = "Lumina needs permission to access photos and videos on your device.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    textAlign = TextAlign.Center
                 )
                 Spacer(modifier = Modifier.height(24.dp))
                 Button(

@@ -24,6 +24,7 @@
         android:name="org.fossify.gallery.App"
         android:allowBackup="true"
         android:appCategory="image"
+        android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_launcher_name"
         android:roundIcon="@mipmap/ic_launcher"
@@ -35,8 +36,8 @@
         <activity
             android:name="org.fossify.gallery.ui.LuminaActivity"
             android:exported="true"
-            android:launchMode="singleTop"
             android:label="@string/app_launcher_name"
+            android:launchMode="singleTop"
             android:theme="@style/AppTheme">
 
             <intent-filter>

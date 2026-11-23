@@ -26,10 +26,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
@@ -45,13 +48,22 @@ fun SearchBarOverlay(
     onQueryChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     activeAlbumName: String? = null,
-    onAlbumBackClick: (() -> Unit)? = null
+    onAlbumBackClick: (() -> Unit)? = null,
+    onCloseClick: (() -> Unit)? = null,
+    autoFocus: Boolean = false
 ) {
     val focusManager = LocalFocusManager.current
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(autoFocus) {
+        if (autoFocus) {
+            focusRequester.requestFocus()
+        }
+    }
 
     Surface(
         shape = RoundedCornerShape(28.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
         border = BorderStroke(
             width = 0.75.dp,
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
@@ -68,7 +80,32 @@ fun SearchBarOverlay(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (activeAlbumName != null && onAlbumBackClick != null) {
+            if (onCloseClick != null) {
+                val closeInteraction = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .pressScale(closeInteraction, pressedScale = 0.88f)
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = closeInteraction,
+                            indication = ripple(bounded = true),
+                            role = Role.Button,
+                            onClick = {
+                                focusManager.clearFocus()
+                                onCloseClick()
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Close search",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            } else if (activeAlbumName != null && onAlbumBackClick != null) {
                 val chipInteraction = remember { MutableInteractionSource() }
                 Row(
                     modifier = Modifier
@@ -138,7 +175,9 @@ fun SearchBarOverlay(
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester)
                 )
             }
 

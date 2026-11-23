@@ -2,6 +2,7 @@ package org.fossify.gallery.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MotionScheme
@@ -63,6 +64,12 @@ private val LuminaShapes = Shapes(
     extraLarge = RoundedCornerShape(32.dp)
 )
 
+@Composable
+fun rememberLuminaDarkColorScheme(dynamicColor: Boolean = true): ColorScheme {
+    val context = LocalContext.current
+    return if (dynamicColor) dynamicDarkColorScheme(context) else LuminaDarkColors
+}
+
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun LuminaTheme(
@@ -83,6 +90,7 @@ fun LuminaTheme(
         if (darkTheme) LuminaDarkColors else LuminaLightColors
     }
 
+    // Standard motion scheme retains MaterialExpressiveTheme tokens without bouncy overshoot
     MaterialExpressiveTheme(
         colorScheme = colorScheme,
         shapes = LuminaShapes,

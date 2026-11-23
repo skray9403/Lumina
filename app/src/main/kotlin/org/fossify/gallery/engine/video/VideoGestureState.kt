@@ -3,9 +3,10 @@ package org.fossify.gallery.engine.video
 import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
+import android.view.WindowManager
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -13,30 +14,28 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.media3.exoplayer.ExoPlayer
-import kotlin.math.abs
+import kotlinx.coroutines.delay
 
 /**
  * Pure Compose gesture overlay for video playback.
- *
- * Left half vertical drag: Window screen brightness
- * Right half vertical drag: AudioManager media volume
- * Horizontal drag: Timeline scrub with floating pill
- * Double tap left/right: Seek -10s / +10s
+ * - Horizontal swipes pass straight through to HorizontalPager.
+ * - Left vertical drag: window brightness (restored to system default on exit).
+ * - Right vertical drag: media volume.
+ * - Double-tap left/right: seek -10s / +10s with auto-dismissing pill.
  */
 @Composable
 fun VideoGestureOverlay(
@@ -46,11 +45,34 @@ fun VideoGestureOverlay(
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
-    val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
+    val audioManager = remember(context) {
+        context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    }
 
-    var isScrubbing by remember { mutableStateOf(false) }
-    var scrubTimeMs by remember { mutableLongStateOf(0L) }
     var pillText by remember { mutableStateOf<String?>(null) }
+    var pillNonce by remember { mutableIntStateOf(0) }
+    var isDragging by remember { mutableStateOf(false) }
+
+    // Restore system brightness when leaving the video page
+    DisposableEffect(activity) {
+        onDispose {
+            activity?.window?.let { window ->
+                val lp = window.attributes
+                if (lp.screenBrightness != WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE) {
+                    lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    window.attributes = lp
+                }
+            }
+        }
+    }
+
+    // Auto-clear pill after tap seek
+    LaunchedEffect(pillNonce, isDragging) {
+        if (pillText != null && !isDragging) {
+            delay(750)
+            pillText = null
+        }
+    }
 
     Box(
         modifier = modifier
@@ -61,86 +83,56 @@ fun VideoGestureOverlay(
                     onDoubleTap = { tapOffset ->
                         val isLeft = tapOffset.x < size.width / 2f
                         val seekDelta = if (isLeft) -10_000L else 10_000L
-                        val newPos = (player.currentPosition + seekDelta).coerceIn(0L, player.duration.coerceAtLeast(0L))
+                        val duration = player.duration.coerceAtLeast(0L)
+                        val newPos = (player.currentPosition + seekDelta).coerceIn(0L, duration)
                         player.seekTo(newPos)
                         pillText = if (isLeft) "-10s" else "+10s"
+                        pillNonce++
                     }
                 )
             }
             .pointerInput(player) {
-                var totalDragX = 0f
-                var totalDragY = 0f
-                var dragType = 0 // 1 = scrub, 2 = brightness, 3 = volume
+                var isLeftZone = false
+                var accumulatedVolPx = 0f
 
-                detectDragGestures(
+                detectVerticalDragGestures(
                     onDragStart = { startOffset ->
-                        totalDragX = 0f
-                        totalDragY = 0f
-                        dragType = 0
-                        isScrubbing = false
+                        isLeftZone = startOffset.x < size.width / 2f
+                        accumulatedVolPx = 0f
+                        isDragging = true
                     },
                     onDragEnd = {
-                        if (dragType == 1 && isScrubbing) {
-                            player.seekTo(scrubTimeMs)
-                            player.play()
-                        }
-                        isScrubbing = false
-                        dragType = 0
+                        isDragging = false
                         pillText = null
                     },
                     onDragCancel = {
-                        isScrubbing = false
-                        dragType = 0
+                        isDragging = false
                         pillText = null
                     },
-                    onDrag = { change, dragAmount ->
+                    onVerticalDrag = { change, dragAmount ->
                         change.consume()
-                        totalDragX += dragAmount.x
-                        totalDragY += dragAmount.y
-
-                        if (dragType == 0) {
-                            if (abs(totalDragX) > abs(totalDragY) && abs(totalDragX) > 20f) {
-                                dragType = 1 // horizontal scrub
-                                isScrubbing = true
-                                player.pause()
-                            } else if (abs(totalDragY) > 20f) {
-                                val isLeft = change.position.x < size.width / 2f
-                                dragType = if (isLeft) 2 else 3 // 2: brightness, 3: volume
+                        if (isLeftZone) {
+                            activity?.window?.let { window ->
+                                val lp = window.attributes
+                                val current = if (lp.screenBrightness < 0f) 0.5f else lp.screenBrightness
+                                val delta = -dragAmount / size.height.coerceAtLeast(1)
+                                val updated = (current + delta).coerceIn(0.01f, 1f)
+                                lp.screenBrightness = updated
+                                window.attributes = lp
+                                pillText = "Brightness ${(updated * 100).toInt()}%"
                             }
-                        }
-
-                        when (dragType) {
-                            1 -> { // Scrub
-                                val duration = player.duration.coerceAtLeast(1L)
-                                val deltaFraction = dragAmount.x / size.width
-                                val newTarget = (player.currentPosition + (deltaFraction * duration).toLong())
-                                    .coerceIn(0L, duration)
-                                scrubTimeMs = newTarget
-                                pillText = "${formatTime(newTarget)} / ${formatTime(duration)}"
-                            }
-                            2 -> { // Brightness (left)
-                                activity?.let { act ->
-                                    val currentBrightness = act.window.attributes.screenBrightness.let {
-                                        if (it < 0f) 0.5f else it
-                                    }
-                                    val delta = -dragAmount.y / size.height
-                                    val newBrightness = (currentBrightness + delta).coerceIn(0.01f, 1f)
-                                    val lp = act.window.attributes
-                                    lp.screenBrightness = newBrightness
-                                    act.window.attributes = lp
-                                    pillText = "Brightness: ${(newBrightness * 100).toInt()}%"
-                                }
-                            }
-                            3 -> { // Volume (right)
-                                audioManager?.let { am ->
-                                    val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                    val currentVol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-                                    val delta = if (dragAmount.y < -15f) 1 else if (dragAmount.y > 15f) -1 else 0
-                                    if (delta != 0) {
-                                        val newVol = (currentVol + delta).coerceIn(0, maxVol)
-                                        am.setStreamVolume(AudioManager.STREAM_MUSIC, newVol, 0)
-                                        pillText = "Volume: ${(newVol.toFloat() / maxVol * 100).toInt()}%"
-                                    }
+                        } else {
+                            audioManager?.let { am ->
+                                accumulatedVolPx += dragAmount
+                                val stepPx = (size.height / 18f).coerceAtLeast(24f)
+                                if (kotlin.math.abs(accumulatedVolPx) >= stepPx) {
+                                    val steps = (-accumulatedVolPx / stepPx).toInt()
+                                    accumulatedVolPx %= stepPx
+                                    val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                    val curVol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                    val nextVol = (curVol + steps).coerceIn(0, maxVol)
+                                    am.setStreamVolume(AudioManager.STREAM_MUSIC, nextVol, 0)
+                                    pillText = "Volume ${(nextVol * 100 / maxVol)}%"
                                 }
                             }
                         }
@@ -152,23 +144,15 @@ fun VideoGestureOverlay(
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(24.dp))
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .background(Color.Black.copy(alpha = 0.78f), RoundedCornerShape(24.dp))
+                    .padding(horizontal = 20.dp, vertical = 10.dp)
             ) {
                 Text(
                     text = text,
                     color = Color.White,
-                    fontSize = 15.sp,
                     style = MaterialTheme.typography.labelLarge
                 )
             }
         }
     }
-}
-
-private fun formatTime(ms: Long): String {
-    val totalSeconds = (ms / 1000).coerceAtLeast(0)
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    return String.format("%02d:%02d", minutes, seconds)
 }

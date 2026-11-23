@@ -10,69 +10,75 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 
 /**
- * Critically-damped / zero-overshoot motion tokens for Lumina (120Hz tuned).
+ * Critically-damped / zero-overshoot motion tokens tuned for 120Hz.
  */
 object LuminaMotion {
-    /** Spatial morphs (dock resize, sheet settles, layout shifts). */
     fun <T> spatialStandard() = spring<T>(
         dampingRatio = 0.96f,
         stiffness = 680f
     )
 
-    /** Backward compatibility alias for spatialStandard */
     fun <T> standardSpring() = spatialStandard<T>()
 
     fun <T> responsiveSpring() = spring<T>(
         dampingRatio = 0.98f,
-        stiffness = 800f
+        stiffness = 850f
     )
 
     fun <T> gentleSpring() = spring<T>(
-        dampingRatio = 0.92f,
-        stiffness = 550f
+        dampingRatio = 0.94f,
+        stiffness = 560f
     )
 
-    /** Dock size morph specifically typed to avoid inference noise. */
+    val viewerMorph = spring<Float>(
+        dampingRatio = 0.96f,
+        stiffness = 640f
+    )
+
     val dockSizeSpec = spring<IntSize>(
         dampingRatio = 0.96f,
-        stiffness = 700f
+        stiffness = 720f
     )
 
-    /** Immediate touch-down tactile compression (strictly no overshoot). */
     val pressScale = spring<Float>(
         dampingRatio = Spring.DampingRatioNoBouncy,
         stiffness = 1400f
     )
 
-    /** Dock hide/show translation on scroll. */
     val chromeSlide = spring<Float>(
         dampingRatio = 0.98f,
-        stiffness = 750f
+        stiffness = 780f
     )
 
-    /** Zero-overshoot color transitions. */
     val colorTransition = tween<Color>(
         durationMillis = 150,
         easing = FastOutSlowInEasing
     )
 
+    /** Through-zero mode swap: outgoing hits 0f before incoming starts. */
+    val throughZeroExit = tween<Float>(
+        durationMillis = 85,
+        easing = FastOutSlowInEasing
+    )
+
+    val throughZeroEnter = tween<Float>(
+        durationMillis = 135,
+        delayMillis = 85,
+        easing = LinearOutSlowInEasing
+    )
+
     val contentEnter = tween<Float>(
-        durationMillis = 180,
+        durationMillis = 160,
         easing = LinearOutSlowInEasing
     )
 
     val contentExit = tween<Float>(
-        durationMillis = 120,
+        durationMillis = 110,
         easing = FastOutSlowInEasing
     )
 
     val chromeOffset = spring<IntOffset>(
         dampingRatio = Spring.DampingRatioNoBouncy,
-        stiffness = 750f
-    )
-
-    fun screenSlide() = tween<IntOffset>(
-        durationMillis = 280,
-        easing = FastOutSlowInEasing
+        stiffness = 760f
     )
 }

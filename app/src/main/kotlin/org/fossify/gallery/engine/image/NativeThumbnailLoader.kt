@@ -1,10 +1,9 @@
 package org.fossify.gallery.engine.image
 
 import android.content.ContentResolver
-import android.content.Context
 import android.graphics.Bitmap
-import android.net.Uri
 import android.os.CancellationSignal
+import android.os.OperationCanceledException
 import android.util.LruCache
 import android.util.Size
 import androidx.compose.runtime.Composable
@@ -16,83 +15,89 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.fossify.gallery.models.Medium
+import kotlin.coroutines.resume
 
 data class ThumbnailKey(val id: Long, val sizePx: Int, val dateModified: Long)
 
+private data class CachedThumbnail(
+    val imageBitmap: ImageBitmap,
+    val byteCount: Int
+)
+
 /**
- * Native, memory-bounded thumbnail loader for Lumina.
- *
- * Employs platform ContentResolver.loadThumbnail(uri, size, signal) directly on Dispatchers.IO,
- * bounded by a ~15% runtime maxMemory LruCache, wired to CancellationSignal on fast scroll fling.
+ * Native, memory-bounded thumbnail loader using ContentResolver.loadThumbnail
+ * with real CancellationSignal propagation on coroutine cancellation.
  */
 object NativeThumbnailLoader {
-    private val maxMemoryBytes = Runtime.getRuntime().maxMemory()
-    private val cacheSizeBytes = (maxMemoryBytes * 0.15).toInt().coerceAtLeast(1024 * 1024 * 16)
+    const val DEFAULT_THUMB_PX = 360
 
-    private val cache = object : LruCache<ThumbnailKey, Bitmap>(cacheSizeBytes) {
-        override fun sizeOf(key: ThumbnailKey, bitmap: Bitmap): Int {
-            return bitmap.byteCount
-        }
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(6))
+
+    private val maxMemoryBytes = Runtime.getRuntime().maxMemory()
+    private val cacheSizeBytes = (maxMemoryBytes * 0.15).toInt().coerceAtLeast(16 * 1024 * 1024)
+
+    private val cache = object : LruCache<ThumbnailKey, CachedThumbnail>(cacheSizeBytes) {
+        override fun sizeOf(key: ThumbnailKey, value: CachedThumbnail): Int = value.byteCount
+    }
+
+    fun getCached(medium: Medium, targetSizePx: Int = DEFAULT_THUMB_PX): ImageBitmap? {
+        val key = ThumbnailKey(medium.id, targetSizePx, medium.dateModifiedMs)
+        return cache.get(key)?.imageBitmap
     }
 
     suspend fun loadThumbnail(
         contentResolver: ContentResolver,
         medium: Medium,
-        targetSizePx: Int = 320
+        targetSizePx: Int = DEFAULT_THUMB_PX
     ): ImageBitmap? {
         val key = ThumbnailKey(medium.id, targetSizePx, medium.dateModifiedMs)
-        synchronized(cache) {
-            val cached = cache.get(key)
-            if (cached != null && !cached.isRecycled) {
-                return cached.asImageBitmap()
-            }
-        }
+        cache.get(key)?.let { return it.imageBitmap }
 
-        return withContext(Dispatchers.IO) {
+        return suspendCancellableCoroutine { cont ->
             val signal = CancellationSignal()
-            try {
-                val size = Size(targetSizePx, targetSizePx)
-                val bitmap = contentResolver.loadThumbnail(medium.uri, size, signal)
-                if (bitmap != null) {
-                    synchronized(cache) {
-                        cache.put(key, bitmap)
-                    }
-                    bitmap.asImageBitmap()
-                } else {
-                    null
-                }
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) {
-                    signal.cancel()
-                }
-                null
+            cont.invokeOnCancellation {
+                signal.cancel()
             }
-        }
-    }
 
-    fun getCached(medium: Medium, targetSizePx: Int = 320): ImageBitmap? {
-        val key = ThumbnailKey(medium.id, targetSizePx, medium.dateModifiedMs)
-        synchronized(cache) {
-            val cached = cache.get(key)
-            if (cached != null && !cached.isRecycled) {
-                return cached.asImageBitmap()
+            ioScope.launch {
+                try {
+                    val bitmap: Bitmap? = contentResolver.loadThumbnail(
+                        medium.uri,
+                        Size(targetSizePx, targetSizePx),
+                        signal
+                    )
+                    if (bitmap != null) {
+                        val imageBitmap = bitmap.asImageBitmap()
+                        cache.put(key, CachedThumbnail(imageBitmap, bitmap.allocationByteCount))
+                        if (cont.isActive) cont.resume(imageBitmap)
+                    } else {
+                        if (cont.isActive) cont.resume(null)
+                    }
+                } catch (_: OperationCanceledException) {
+                    if (cont.isActive) cont.resume(null)
+                } catch (_: Exception) {
+                    if (cont.isActive) cont.resume(null)
+                }
             }
         }
-        return null
     }
 
     fun clearCache() {
-        synchronized(cache) {
-            cache.evictAll()
-        }
+        cache.evictAll()
     }
 }
 
 @Composable
-fun rememberThumbnail(medium: Medium, sizePx: Int = 320): ImageBitmap? {
+fun rememberThumbnail(
+    medium: Medium,
+    sizePx: Int = NativeThumbnailLoader.DEFAULT_THUMB_PX
+): ImageBitmap? {
     val context = LocalContext.current
     var bitmap by remember(medium.id, medium.dateModifiedMs, sizePx) {
         mutableStateOf(NativeThumbnailLoader.getCached(medium, sizePx))

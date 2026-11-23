@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.fossify.gallery.engine.image.NativeThumbnailLoader
 import org.fossify.gallery.engine.image.rememberThumbnail
 import org.fossify.gallery.models.Directory
 import org.fossify.gallery.models.Medium
@@ -84,20 +85,21 @@ private fun AlbumCard(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
 
-    // Memoize cover proxy with a negative ID so it never collides with positive MediaStore IDs
-    val coverMedium = remember(album.bucketId, album.coverUri, album.latestDateMs) {
+    val coverMedium = remember(album.bucketId, album.coverUri, album.coverMediumId, album.coverDateModifiedMs) {
+        val resolvedId = if (album.coverMediumId != 0L) album.coverMediumId else -album.bucketId - 1L
+        val resolvedMod = if (album.coverDateModifiedMs != 0L) album.coverDateModifiedMs else album.latestDateMs
         Medium(
-            id = -album.bucketId - 1L,
+            id = resolvedId,
             uri = album.coverUri,
             displayName = album.name,
             mimeType = "image/jpeg",
             width = 0,
             height = 0,
             dateTakenMs = album.latestDateMs,
-            dateModifiedMs = album.latestDateMs
+            dateModifiedMs = resolvedMod
         )
     }
-    val thumbnailBitmap = rememberThumbnail(coverMedium, sizePx = 400)
+    val thumbnailBitmap = rememberThumbnail(coverMedium, sizePx = NativeThumbnailLoader.DEFAULT_THUMB_PX)
 
     Column(
         modifier = modifier

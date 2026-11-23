@@ -10,9 +10,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -23,10 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import org.fossify.gallery.engine.metadata.MediaMetadata
 
-/**
- * Expressive Modal Bottom Sheet presenting detailed EXIF and storage technical metadata.
- */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun LuminaDetailsBottomSheet(
     metadata: MediaMetadata?,
@@ -63,18 +61,13 @@ fun LuminaDetailsBottomSheet(
                         .height(180.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    CircularProgressIndicator()
+                    LoadingIndicator()
                 }
             } else {
-                // File info
                 StorageInfoSection(metadata = metadata)
-
                 HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
-
-                // Technical camera & exposure info
                 ExifMetadataSection(metadata = metadata)
 
-                // Location info (if available)
                 if (metadata.latitude != null && metadata.longitude != null) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
                     LocationSection(metadata = metadata)

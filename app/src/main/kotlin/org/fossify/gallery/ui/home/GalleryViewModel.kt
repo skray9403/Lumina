@@ -5,16 +5,22 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.fossify.gallery.models.Directory
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.ui.data.LuminaMediaRepository
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 enum class GalleryTab {
@@ -25,6 +31,7 @@ enum class GalleryTab {
 @Immutable
 data class TimelineSection(
     val title: String,
+    val pillLabel: String = title,
     val items: List<Medium>
 )
 
@@ -39,172 +46,245 @@ data class GalleryUiState(
     val columnCount: Int = 3,
     val searchQuery: String = "",
     val activeAlbumId: Long? = null,
+    val pendingIntentRequest: IntentSenderRequest? = null,
+    val visibleMedia: List<Medium> = emptyList(),
+    val indexToDatePill: List<String> = emptyList(),
+    val mediaIdToGridIndex: Map<Long, Int> = emptyMap(),
+    val isSearchActive: Boolean = false
+)
+
+private data class FilterInputs(
+    val selectedTab: GalleryTab = GalleryTab.PHOTOS,
+    val selectedIds: Set<Long> = emptySet(),
+    val columnCount: Int = 3,
+    val searchQuery: String = "",
+    val isSearchActive: Boolean = false,
+    val activeAlbumId: Long? = null,
+    val pickerMimeType: String? = null,
     val pendingIntentRequest: IntentSenderRequest? = null
 )
 
-class GalleryViewModel(application: Application) : AndroidViewModel(application) {
-    private val repository = LuminaMediaRepository(application)
+private data class DerivedTimeline(
+    val visibleMedia: List<Medium>,
+    val sections: List<TimelineSection>,
+    val albums: List<Directory>,
+    val indexToDatePill: List<String>,
+    val mediaIdToGridIndex: Map<Long, Int>
+)
 
-    private val _uiState = MutableStateFlow(GalleryUiState())
-    val uiState: StateFlow<GalleryUiState> = _uiState.asStateFlow()
+class GalleryViewModel(application: Application) : AndroidViewModel(application) {
+    val repository = LuminaMediaRepository(application)
+
+    private val rawMedia = MutableStateFlow<List<Medium>>(emptyList())
+    private val inputs = MutableStateFlow(FilterInputs())
 
     init {
         viewModelScope.launch {
             repository.mediaFlow.collect { media ->
-                _uiState.update { current ->
-                    val albums = repository.extractDirectories(media)
-                    val filtered = filterMedia(media, current.searchQuery, current.activeAlbumId)
-                    val sections = groupIntoTimeline(filtered)
-                    current.copy(
-                        allMedia = media,
-                        timelineSections = sections,
-                        albums = albums
-                    )
-                }
+                rawMedia.value = media
             }
         }
+    }
+
+    val uiState: StateFlow<GalleryUiState> = combine(rawMedia, inputs) { media, inp ->
+        val derived = deriveTimeline(
+            media = media,
+            query = inp.searchQuery,
+            albumId = inp.activeAlbumId,
+            pickerMimeType = inp.pickerMimeType
+        )
+        GalleryUiState(
+            allMedia = media,
+            timelineSections = derived.sections,
+            albums = derived.albums,
+            selectedTab = inp.selectedTab,
+            selectedIds = inp.selectedIds,
+            isMultiSelectMode = inp.selectedIds.isNotEmpty(),
+            columnCount = inp.columnCount,
+            searchQuery = inp.searchQuery,
+            activeAlbumId = inp.activeAlbumId,
+            pendingIntentRequest = inp.pendingIntentRequest,
+            visibleMedia = derived.visibleMedia,
+            indexToDatePill = derived.indexToDatePill,
+            mediaIdToGridIndex = derived.mediaIdToGridIndex,
+            isSearchActive = inp.isSearchActive
+        )
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = GalleryUiState()
+        )
+
+    fun setPickerMimeType(mimeType: String?) {
+        inputs.update { it.copy(pickerMimeType = mimeType) }
     }
 
     fun refresh() {
         viewModelScope.launch {
-            val media = repository.queryAllMedia()
-            _uiState.update { current ->
-                val albums = repository.extractDirectories(media)
-                val filtered = filterMedia(media, current.searchQuery, current.activeAlbumId)
-                val sections = groupIntoTimeline(filtered)
-                current.copy(
-                    allMedia = media,
-                    timelineSections = sections,
-                    albums = albums
-                )
-            }
+            rawMedia.value = repository.queryAllMedia()
         }
     }
 
     fun setTab(tab: GalleryTab) {
-        _uiState.update { current ->
+        inputs.update { current ->
             if (tab == GalleryTab.PHOTOS && current.activeAlbumId != null) {
-                val filtered = filterMedia(current.allMedia, current.searchQuery, null)
-                current.copy(
-                    selectedTab = tab,
-                    activeAlbumId = null,
-                    timelineSections = groupIntoTimeline(filtered)
-                )
+                current.copy(selectedTab = tab, activeAlbumId = null)
             } else {
                 current.copy(selectedTab = tab)
             }
         }
     }
 
-    fun setSearchQuery(query: String) {
-        _uiState.update { current ->
-            val filtered = filterMedia(current.allMedia, query, current.activeAlbumId)
-            current.copy(
-                searchQuery = query,
-                timelineSections = groupIntoTimeline(filtered)
-            )
+    fun setSearchActive(active: Boolean) {
+        inputs.update { current ->
+            if (!active) {
+                current.copy(isSearchActive = false, searchQuery = "")
+            } else {
+                current.copy(isSearchActive = true)
+            }
         }
     }
 
+    fun setSearchQuery(query: String) {
+        inputs.update { it.copy(searchQuery = query) }
+    }
+
     fun filterByAlbum(bucketId: Long?) {
-        _uiState.update { current ->
-            val filtered = filterMedia(current.allMedia, current.searchQuery, bucketId)
-            current.copy(
+        inputs.update {
+            it.copy(
                 activeAlbumId = bucketId,
-                selectedTab = GalleryTab.PHOTOS,
-                timelineSections = groupIntoTimeline(filtered)
+                selectedTab = GalleryTab.PHOTOS
             )
         }
     }
 
     fun setColumnCount(count: Int) {
         val clamped = count.coerceIn(2, 5)
-        _uiState.update { it.copy(columnCount = clamped) }
+        inputs.update { it.copy(columnCount = clamped) }
     }
 
     fun toggleSelection(id: Long) {
-        _uiState.update { current ->
-            val next = current.selectedIds.toMutableSet()
-            if (next.contains(id)) {
-                next.remove(id)
+        inputs.update { current ->
+            val next = if (id in current.selectedIds) {
+                current.selectedIds - id
             } else {
-                next.add(id)
+                current.selectedIds + id
             }
-            current.copy(
-                selectedIds = next,
-                isMultiSelectMode = next.isNotEmpty()
-            )
+            current.copy(selectedIds = next)
         }
     }
 
+    /** Scoped strictly to currently visible timeline (album/search filtered). */
     fun selectAll() {
-        _uiState.update { current ->
-            val allIds = current.allMedia.map { it.id }.toSet()
-            current.copy(
-                selectedIds = allIds,
-                isMultiSelectMode = allIds.isNotEmpty()
-            )
-        }
+        val visibleIds = uiState.value.visibleMedia.mapTo(HashSet()) { it.id }
+        inputs.update { it.copy(selectedIds = visibleIds) }
     }
 
     fun clearSelection() {
-        _uiState.update {
-            it.copy(
-                selectedIds = emptySet(),
-                isMultiSelectMode = false
-            )
-        }
+        inputs.update { it.copy(selectedIds = emptySet()) }
     }
 
     fun deleteSelected() {
-        val state = _uiState.value
+        val state = uiState.value
         val uris = state.allMedia.filter { it.id in state.selectedIds }.map { it.uri }
         if (uris.isNotEmpty()) {
             val req = repository.createDeleteRequest(uris)
-            _uiState.update { it.copy(pendingIntentRequest = req) }
+            inputs.update { it.copy(pendingIntentRequest = req) }
         }
     }
 
     fun trashSelected(isTrash: Boolean = true) {
-        val state = _uiState.value
+        val state = uiState.value
         val uris = state.allMedia.filter { it.id in state.selectedIds }.map { it.uri }
         if (uris.isNotEmpty()) {
             val req = repository.createTrashRequest(uris, isTrash)
-            _uiState.update { it.copy(pendingIntentRequest = req) }
+            inputs.update { it.copy(pendingIntentRequest = req) }
         }
     }
 
     fun favoriteSelected(isFavorite: Boolean) {
-        val state = _uiState.value
+        val state = uiState.value
         val uris = state.allMedia.filter { it.id in state.selectedIds }.map { it.uri }
         if (uris.isNotEmpty()) {
             val req = repository.createFavoriteRequest(uris, isFavorite)
-            _uiState.update { it.copy(pendingIntentRequest = req) }
+            inputs.update { it.copy(pendingIntentRequest = req) }
         }
     }
 
     fun clearPendingIntentRequest() {
-        _uiState.update { it.copy(pendingIntentRequest = null) }
+        inputs.update { it.copy(pendingIntentRequest = null) }
     }
 
-    private fun filterMedia(media: List<Medium>, query: String, albumId: Long?): List<Medium> {
-        var result = media
+    private fun deriveTimeline(
+        media: List<Medium>,
+        query: String,
+        albumId: Long?,
+        pickerMimeType: String?
+    ): DerivedTimeline {
+        val mimeFiltered = when {
+            pickerMimeType == null || pickerMimeType == "*/*" -> media
+            pickerMimeType.startsWith("image/") -> media.filter { !it.isVideo }
+            pickerMimeType.startsWith("video/") -> media.filter { it.isVideo }
+            else -> media
+        }
+
+        val albums = repository.extractDirectories(mimeFiltered)
+
+        var filtered = mimeFiltered
         if (albumId != null) {
-            result = result.filter { it.bucketId == albumId }
+            filtered = filtered.filter { it.bucketId == albumId }
         }
         if (query.isNotBlank()) {
             val lower = query.trim().lowercase(Locale.ROOT)
-            result = result.filter {
+            filtered = filtered.filter {
                 it.displayName.lowercase(Locale.ROOT).contains(lower) ||
-                        it.bucketName.lowercase(Locale.ROOT).contains(lower)
+                    it.bucketName.lowercase(Locale.ROOT).contains(lower)
             }
         }
-        return result
-    }
 
-    private fun groupIntoTimeline(media: List<Medium>): List<TimelineSection> {
-        val dateFormat = SimpleDateFormat("EEEE, MMMM d, yyyy", Locale.getDefault())
-        return media.groupBy { dateFormat.format(Date(it.dateTakenMs)) }
-            .map { (date, items) -> TimelineSection(date, items) }
+        val zone = ZoneId.systemDefault()
+        val currentYear = LocalDate.now(zone).year
+        val locale = Locale.getDefault()
+        val headerFmtSameYear = DateTimeFormatter.ofPattern("EEE, d MMM", locale)
+        val headerFmtOtherYear = DateTimeFormatter.ofPattern("EEE, d MMM yyyy", locale)
+
+        val grouped = LinkedHashMap<LocalDate, MutableList<Medium>>()
+        for (item in filtered) {
+            val day = Instant.ofEpochMilli(item.dateTakenMs).atZone(zone).toLocalDate()
+            grouped.getOrPut(day) { ArrayList() }.add(item)
+        }
+
+        val sections = ArrayList<TimelineSection>(grouped.size)
+        val indexToPill = ArrayList<String>(filtered.size + grouped.size)
+        val idToIndex = HashMap<Long, Int>(filtered.size)
+
+        var gridIndex = 0
+        for ((day, items) in grouped) {
+            val label = if (day.year == currentYear) {
+                day.format(headerFmtSameYear)
+            } else {
+                day.format(headerFmtOtherYear)
+            }
+            sections.add(TimelineSection(title = label, pillLabel = label, items = items))
+            // Header item index
+            indexToPill.add(label)
+            gridIndex++
+            // Media item indices
+            for (m in items) {
+                indexToPill.add(label)
+                idToIndex[m.id] = gridIndex
+                gridIndex++
+            }
+        }
+
+        return DerivedTimeline(
+            visibleMedia = filtered,
+            sections = sections,
+            albums = albums,
+            indexToDatePill = indexToPill,
+            mediaIdToGridIndex = idToIndex
+        )
     }
 }
