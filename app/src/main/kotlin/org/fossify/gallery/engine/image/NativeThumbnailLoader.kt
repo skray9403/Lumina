@@ -21,6 +21,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.fossify.gallery.models.Medium
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 
 data class ThumbnailKey(val id: Long, val sizePx: Int, val dateModified: Long)
@@ -30,14 +31,12 @@ private data class CachedThumbnail(
     val byteCount: Int
 )
 
-/**
- * Native, memory-bounded thumbnail loader using ContentResolver.loadThumbnail
- * with real CancellationSignal propagation on coroutine cancellation.
- */
 object NativeThumbnailLoader {
     const val DEFAULT_THUMB_PX = 360
 
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(6))
+    private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(2))
+    private val inFlightPrefetch = ConcurrentHashMap.newKeySet<ThumbnailKey>()
 
     private val maxMemoryBytes = Runtime.getRuntime().maxMemory()
     private val cacheSizeBytes = (maxMemoryBytes * 0.15).toInt().coerceAtLeast(16 * 1024 * 1024)
@@ -83,6 +82,40 @@ object NativeThumbnailLoader {
                     if (cont.isActive) cont.resume(null)
                 } catch (_: Exception) {
                     if (cont.isActive) cont.resume(null)
+                }
+            }
+        }
+    }
+
+    /**
+     * Warms upcoming rows ahead of the viewport on a dedicated 2-thread IO pool
+     * without competing against currently visible tile loads.
+     */
+    fun prefetch(
+        contentResolver: ContentResolver,
+        items: List<Medium>,
+        targetSizePx: Int = DEFAULT_THUMB_PX
+    ) {
+        for (medium in items) {
+            val key = ThumbnailKey(medium.id, targetSizePx, medium.dateModifiedMs)
+            if (cache.get(key) != null) continue
+            if (!inFlightPrefetch.add(key)) continue
+
+            prefetchScope.launch {
+                try {
+                    if (cache.get(key) == null) {
+                        val bitmap = contentResolver.loadThumbnail(
+                            medium.uri,
+                            Size(targetSizePx, targetSizePx),
+                            null
+                        )
+                        if (bitmap != null) {
+                            cache.put(key, CachedThumbnail(bitmap.asImageBitmap(), bitmap.allocationByteCount))
+                        }
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    inFlightPrefetch.remove(key)
                 }
             }
         }

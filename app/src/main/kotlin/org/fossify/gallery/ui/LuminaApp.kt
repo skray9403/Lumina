@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModelProvider
@@ -30,6 +31,7 @@ import org.fossify.gallery.models.Medium
 import org.fossify.gallery.ui.home.GalleryTab
 import org.fossify.gallery.ui.home.GalleryViewModel
 import org.fossify.gallery.ui.home.LuminaHomeScreen
+import org.fossify.gallery.ui.home.findItemBoundsInRoot
 import org.fossify.gallery.ui.navigation.DockMode
 import org.fossify.gallery.ui.navigation.LuminaBottomDock
 import org.fossify.gallery.ui.navigation.rememberDockScrollState
@@ -67,11 +69,13 @@ fun LuminaApp(
     val photosGridState = rememberLazyGridState()
     val albumGridState = rememberLazyGridState()
     val dockScrollState = rememberDockScrollState()
-    val photosTileBounds = remember { HashMap<Long, Rect>() }
-    val albumTileBounds = remember { HashMap<Long, Rect>() }
+
+    var photosGridRootOffset by remember { mutableStateOf(Offset.Zero) }
+    var albumGridRootOffset by remember { mutableStateOf(Offset.Zero) }
 
     var isViewerOpen by remember { mutableStateOf(false) }
     var isViewerClosing by remember { mutableStateOf(false) }
+    var isVideoActionDockVisible by remember { mutableStateOf(true) }
     var viewerOpenedFromAlbum by remember { mutableStateOf(false) }
     var viewerInitialIndex by remember { mutableIntStateOf(0) }
     var currentViewerPage by remember { mutableIntStateOf(0) }
@@ -102,6 +106,7 @@ fun LuminaApp(
             viewerSourceRect = null
             viewerInitialIndex = resolved
             currentViewerPage = resolved
+            isVideoActionDockVisible = true
             isViewerClosing = false
             isViewerOpen = true
         }
@@ -111,6 +116,7 @@ fun LuminaApp(
         if (isViewerOpen && viewerMedia.isEmpty()) {
             isViewerOpen = false
             isViewerClosing = false
+            isVideoActionDockVisible = true
         }
     }
 
@@ -135,8 +141,8 @@ fun LuminaApp(
                 photosGridState = photosGridState,
                 albumGridState = albumGridState,
                 dockScrollState = dockScrollState,
-                photosTileBounds = photosTileBounds,
-                albumTileBounds = albumTileBounds,
+                onPhotosGridRootOffsetChange = { photosGridRootOffset = it },
+                onAlbumGridRootOffsetChange = { albumGridRootOffset = it },
                 hiddenMediaId = hiddenGridMediaId,
                 isViewerOpen = isViewerOpen,
                 pickerMode = pickerMode,
@@ -147,12 +153,16 @@ fun LuminaApp(
                         .map { it.uri }
                     onMediaPicked(picked)
                 },
-                onMediaClick = { medium, sourceRect, fromAlbum ->
+                onMediaClick = { medium, fromAlbum ->
                     if (pickerMode) {
                         if (allowMultiple) galleryViewModel.toggleSelection(medium.id)
                         else onMediaPicked(listOf(medium.uri))
                     } else {
                         val feed = if (fromAlbum) galleryState.albumMedia else galleryState.visibleMedia
+                        val targetGrid = if (fromAlbum) albumGridState else photosGridState
+                        val rootOffset = if (fromAlbum) albumGridRootOffset else photosGridRootOffset
+                        val sourceRect = targetGrid.findItemBoundsInRoot(rootOffset, medium.id)
+
                         val idx = feed.indexOfFirst { it.id == medium.id }
                         val resolved = if (idx != -1) {
                             useUnfilteredViewerMedia = false
@@ -166,6 +176,7 @@ fun LuminaApp(
                         viewerSourceRect = sourceRect
                         viewerInitialIndex = resolved
                         currentViewerPage = resolved
+                        isVideoActionDockVisible = true
                         isViewerClosing = false
                         viewerViewModel.setChromeVisible(true)
                         isViewerOpen = true
@@ -183,14 +194,14 @@ fun LuminaApp(
                     repository = repository,
                     onPageChanged = { currentViewerPage = it },
                     onPrepareReturnRect = { targetMediaId ->
-                        val boundsMap = if (viewerOpenedFromAlbum) albumTileBounds else photosTileBounds
                         val targetGrid = if (viewerOpenedFromAlbum) albumGridState else photosGridState
+                        val rootOffset = if (viewerOpenedFromAlbum) albumGridRootOffset else photosGridRootOffset
                         val indexMap = if (viewerOpenedFromAlbum) {
                             galleryState.albumMediaIdToGridIndex
                         } else {
                             galleryState.mediaIdToGridIndex
                         }
-                        val existing = boundsMap[targetMediaId]
+                        val existing = targetGrid.findItemBoundsInRoot(rootOffset, targetMediaId)
                         if (existing != null) {
                             existing
                         } else {
@@ -198,17 +209,22 @@ fun LuminaApp(
                             if (gridIdx != null) {
                                 targetGrid.scrollToItem(gridIdx)
                                 withFrameNanos { }
-                                boundsMap[targetMediaId]
+                                targetGrid.findItemBoundsInRoot(rootOffset, targetMediaId)
                             } else {
                                 null
                             }
                         }
                     },
                     onHiddenGridIdChange = { hiddenGridMediaId = it },
-                    onClosingStarted = { isViewerClosing = true },
+                    onVideoActionDockVisibleChange = { isVideoActionDockVisible = it },
+                    onClosingStarted = {
+                        isViewerClosing = true
+                        isVideoActionDockVisible = true
+                    },
                     onDismissComplete = {
                         isViewerOpen = false
                         isViewerClosing = false
+                        isVideoActionDockVisible = true
                         viewerSourceRect = null
                         hiddenGridMediaId = null
                     },
@@ -267,7 +283,10 @@ fun LuminaApp(
             }
 
             val isDockVisible = when {
-                dockInViewerMode -> viewerState.isChromeVisible && !viewerState.isDetailsSheetOpen && pendingAddToAlbumItems == null
+                dockInViewerMode -> viewerState.isChromeVisible &&
+                    isVideoActionDockVisible &&
+                    !viewerState.isDetailsSheetOpen &&
+                    pendingAddToAlbumItems == null
                 galleryState.isMultiSelectMode -> !pickerMode
                 else -> true
             }

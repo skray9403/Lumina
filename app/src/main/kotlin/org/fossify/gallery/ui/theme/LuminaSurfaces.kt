@@ -64,13 +64,15 @@ fun rememberLuminaPillTokens(
 }
 
 /**
- * Theme-matched top edge feather fade tuned to feather cleanly through the bottom third
- * of the floating date pill without creating a solid opaque header strip.
+ * Status-bar-aware smooth feather scrim.
+ * Anchors high opacity across the status bar + upper half of the floating date pill so row 1's
+ * top edge melts seamlessly into the background with zero harsh cutoff, then feathers past the pill.
  */
 @Composable
 fun TopEdgeFeatherFade(
     modifier: Modifier = Modifier,
-    height: Dp = 108.dp,
+    statusBarHeight: Dp = 0.dp,
+    height: Dp = statusBarHeight + 96.dp,
     surfaceColor: Color = MaterialTheme.colorScheme.background
 ) {
     Box(
@@ -78,10 +80,19 @@ fun TopEdgeFeatherFade(
             .fillMaxWidth()
             .height(height)
             .drawWithCache {
+                val h = size.height.coerceAtLeast(1f)
+                val sb = statusBarHeight.toPx()
+                val s0 = ((sb + 8.dp.toPx()) / h).coerceIn(0.05f, 0.45f)
+                val s1 = ((sb + 30.dp.toPx()) / h).coerceIn(s0 + 0.05f, 0.65f)
+                val s2 = ((sb + 52.dp.toPx()) / h).coerceIn(s1 + 0.05f, 0.80f)
+                val s3 = ((sb + 74.dp.toPx()) / h).coerceIn(s2 + 0.05f, 0.94f)
+
                 val brush = Brush.verticalGradient(
-                    0.0f to surfaceColor.copy(alpha = 0.94f),
-                    0.38f to surfaceColor.copy(alpha = 0.68f),
-                    0.70f to surfaceColor.copy(alpha = 0.22f),
+                    0.0f to surfaceColor,
+                    s0 to surfaceColor.copy(alpha = 0.97f),
+                    s1 to surfaceColor.copy(alpha = 0.88f),
+                    s2 to surfaceColor.copy(alpha = 0.44f),
+                    s3 to surfaceColor.copy(alpha = 0.12f),
                     1.0f to Color.Transparent
                 )
                 onDrawBehind {

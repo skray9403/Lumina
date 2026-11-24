@@ -6,7 +6,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -25,28 +24,46 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.flow.distinctUntilChanged
 import org.fossify.gallery.engine.image.NativeThumbnailLoader
 import org.fossify.gallery.engine.image.rememberThumbnail
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.ui.theme.LuminaMotion
-import org.fossify.gallery.ui.theme.pressScale
 
 private val SelectedTileShape = RoundedCornerShape(14.dp)
+
+/**
+ * Computes exact root-space bounds of any visible tile on demand directly from
+ * LazyGridState.layoutInfo without attaching per-tile onGloballyPositioned callbacks.
+ */
+fun LazyGridState.findItemBoundsInRoot(gridRootOffset: Offset, mediaId: Long): Rect? {
+    val info = layoutInfo
+    val item = info.visibleItemsInfo.firstOrNull { it.key == mediaId } ?: return null
+    val left = gridRootOffset.x + item.offset.x.toFloat()
+    val top = gridRootOffset.y + (item.offset.y - info.viewportStartOffset).toFloat()
+    return Rect(
+        left = left,
+        top = top,
+        right = left + item.size.width.toFloat(),
+        bottom = top + item.size.height.toFloat()
+    )
+}
 
 @Composable
 fun MediaTimelineGrid(
@@ -56,16 +73,49 @@ fun MediaTimelineGrid(
     selectedIds: Set<Long>,
     isMultiSelectMode: Boolean,
     hiddenMediaId: Long?,
-    tileBounds: MutableMap<Long, Rect>,
-    onMediaClick: (Medium, Rect?) -> Unit,
+    onGridRootOffsetChange: (Offset) -> Unit,
+    onMediaClick: (Medium) -> Unit,
     onMediaLongClick: (Medium) -> Unit,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(0.dp)
 ) {
+    val context = LocalContext.current
+    val clampedColumns = columnCount.coerceIn(2, 5)
+
+    // 2-row lookahead thumbnail prefetching ahead of the visible viewport
+    LaunchedEffect(gridState, media, clampedColumns) {
+        if (media.isEmpty()) return@LaunchedEffect
+        val resolver = context.contentResolver
+        snapshotFlow {
+            val visible = gridState.layoutInfo.visibleItemsInfo
+            if (visible.isEmpty()) -1 to -1 else visible.first().index to visible.last().index
+        }
+            .distinctUntilChanged()
+            .collect { (firstVis, lastVis) ->
+                if (lastVis < 0) return@collect
+                val aheadStart = (lastVis + 1).coerceAtMost(media.size)
+                val aheadEnd = (lastVis + 1 + clampedColumns * 2).coerceAtMost(media.size)
+                val behindStart = (firstVis - clampedColumns).coerceAtLeast(0)
+                val behindEnd = firstVis.coerceAtLeast(0)
+
+                val toWarm = ArrayList<Medium>(clampedColumns * 3)
+                for (i in aheadStart until aheadEnd) toWarm.add(media[i])
+                for (i in behindStart until behindEnd) toWarm.add(media[i])
+
+                if (toWarm.isNotEmpty()) {
+                    NativeThumbnailLoader.prefetch(resolver, toWarm)
+                }
+            }
+    }
+
     LazyVerticalGrid(
         state = gridState,
-        columns = GridCells.Fixed(columnCount.coerceIn(2, 5)),
-        modifier = modifier.fillMaxSize(),
+        columns = GridCells.Fixed(clampedColumns),
+        modifier = modifier
+            .fillMaxSize()
+            .onGloballyPositioned { coords ->
+                onGridRootOffsetChange(coords.positionInRoot())
+            },
         contentPadding = contentPadding,
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -81,12 +131,11 @@ fun MediaTimelineGrid(
                 isSelected = isSelected,
                 isMultiSelectMode = isMultiSelectMode,
                 isHidden = medium.id == hiddenMediaId,
-                tileBounds = tileBounds,
                 onClick = {
                     if (isMultiSelectMode) {
                         onMediaLongClick(medium)
                     } else {
-                        onMediaClick(medium, tileBounds[medium.id])
+                        onMediaClick(medium)
                     }
                 },
                 onLongClick = { onMediaLongClick(medium) }
@@ -101,16 +150,10 @@ private fun TimelineMediaItem(
     isSelected: Boolean,
     isMultiSelectMode: Boolean,
     isHidden: Boolean,
-    tileBounds: MutableMap<Long, Rect>,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
     val thumbnailBitmap = rememberThumbnail(medium, sizePx = NativeThumbnailLoader.DEFAULT_THUMB_PX)
-    val interactionSource = remember { MutableInteractionSource() }
-
-    DisposableEffect(medium.id) {
-        onDispose { tileBounds.remove(medium.id) }
-    }
 
     val selectionScale = if (isMultiSelectMode) {
         animateFloatAsState(
@@ -125,9 +168,6 @@ private fun TimelineMediaItem(
     Box(
         modifier = Modifier
             .aspectRatio(1f)
-            .onGloballyPositioned { coords ->
-                tileBounds[medium.id] = coords.boundsInRoot()
-            }
             .background(
                 if (isSelected) {
                     MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
@@ -136,8 +176,6 @@ private fun TimelineMediaItem(
                 }
             )
             .combinedClickable(
-                interactionSource = interactionSource,
-                indication = ripple(bounded = true),
                 onClick = onClick,
                 onLongClick = onLongClick
             )
@@ -145,7 +183,6 @@ private fun TimelineMediaItem(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pressScale(interactionSource, pressedScale = 0.96f)
                 .graphicsLayer {
                     scaleX = selectionScale
                     scaleY = selectionScale

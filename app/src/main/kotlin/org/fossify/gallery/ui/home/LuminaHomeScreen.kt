@@ -44,7 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -64,11 +64,11 @@ fun LuminaHomeScreen(
     photosGridState: LazyGridState,
     albumGridState: LazyGridState,
     dockScrollState: DockScrollState,
-    photosTileBounds: MutableMap<Long, Rect>,
-    albumTileBounds: MutableMap<Long, Rect>,
+    onPhotosGridRootOffsetChange: (Offset) -> Unit,
+    onAlbumGridRootOffsetChange: (Offset) -> Unit,
     hiddenMediaId: Long?,
     isViewerOpen: Boolean,
-    onMediaClick: (Medium, Rect?, Boolean) -> Unit,
+    onMediaClick: (Medium, Boolean) -> Unit,
     modifier: Modifier = Modifier,
     pickerMode: Boolean = false,
     allowMultiple: Boolean = false,
@@ -155,13 +155,13 @@ fun LuminaHomeScreen(
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
-    // Top row starts right behind the bottom third of the floating date pill
+    // Row 1 starts inside the high-opacity zone of TopEdgeFeatherFade so bright photos never cut off harshly
     val photosGridPadding = PaddingValues(
-        top = statusBarTop + 34.dp,
+        top = statusBarTop + 26.dp,
         bottom = navBarBottom + 96.dp
     )
     val albumsGridPadding = PaddingValues(
-        top = statusBarTop + 56.dp,
+        top = statusBarTop + 58.dp,
         bottom = navBarBottom + 96.dp
     )
 
@@ -204,8 +204,8 @@ fun LuminaHomeScreen(
                             selectedIds = state.selectedIds,
                             isMultiSelectMode = state.isMultiSelectMode,
                             hiddenMediaId = if (state.activeAlbumId == null) hiddenMediaId else null,
-                            tileBounds = photosTileBounds,
-                            onMediaClick = { medium, rect -> onMediaClick(medium, rect, false) },
+                            onGridRootOffsetChange = onPhotosGridRootOffsetChange,
+                            onMediaClick = { medium -> onMediaClick(medium, false) },
                             onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
                             contentPadding = photosGridPadding
                         )
@@ -223,7 +223,8 @@ fun LuminaHomeScreen(
         }
 
         TopEdgeFeatherFade(
-            height = statusBarTop + 72.dp,
+            statusBarHeight = statusBarTop,
+            height = statusBarTop + 96.dp,
             modifier = Modifier.align(Alignment.TopCenter)
         )
 
@@ -264,10 +265,10 @@ fun LuminaHomeScreen(
                 selectedIds = state.selectedIds,
                 isMultiSelectMode = state.isMultiSelectMode,
                 hiddenMediaId = hiddenMediaId,
-                tileBounds = albumTileBounds,
+                onGridRootOffsetChange = onAlbumGridRootOffsetChange,
                 showConfirmPick = pickerMode && allowMultiple,
                 enabledBack = !isViewerOpen && !state.isMultiSelectMode && !state.isSearchActive,
-                onMediaClick = { medium, rect -> onMediaClick(medium, rect, true) },
+                onMediaClick = { medium -> onMediaClick(medium, true) },
                 onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
                 onColumnCountChange = { viewModel.setColumnCount(it) },
                 onRefresh = { viewModel.refresh() },

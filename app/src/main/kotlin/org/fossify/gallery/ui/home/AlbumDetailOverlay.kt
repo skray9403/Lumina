@@ -25,7 +25,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
@@ -50,10 +50,10 @@ fun AlbumDetailOverlay(
     selectedIds: Set<Long>,
     isMultiSelectMode: Boolean,
     hiddenMediaId: Long?,
-    tileBounds: MutableMap<Long, Rect>,
+    onGridRootOffsetChange: (Offset) -> Unit,
     showConfirmPick: Boolean,
     enabledBack: Boolean,
-    onMediaClick: (Medium, Rect?) -> Unit,
+    onMediaClick: (Medium) -> Unit,
     onMediaLongClick: (Medium) -> Unit,
     onColumnCountChange: (Int) -> Unit,
     onRefresh: () -> Unit,
@@ -110,7 +110,7 @@ fun AlbumDetailOverlay(
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val gridContentPadding = PaddingValues(
-        top = statusBarTop + 34.dp,
+        top = statusBarTop + 26.dp,
         bottom = navBarBottom + 96.dp
     )
 
@@ -139,7 +139,7 @@ fun AlbumDetailOverlay(
             selectedIds = selectedIds,
             isMultiSelectMode = isMultiSelectMode,
             hiddenMediaId = hiddenMediaId,
-            tileBounds = tileBounds,
+            onGridRootOffsetChange = onGridRootOffsetChange,
             onMediaClick = onMediaClick,
             onMediaLongClick = onMediaLongClick,
             contentPadding = gridContentPadding,
@@ -149,7 +149,8 @@ fun AlbumDetailOverlay(
         )
 
         TopEdgeFeatherFade(
-            height = statusBarTop + 72.dp,
+            statusBarHeight = statusBarTop,
+            height = statusBarTop + 96.dp,
             modifier = Modifier.align(Alignment.TopCenter)
         )
 

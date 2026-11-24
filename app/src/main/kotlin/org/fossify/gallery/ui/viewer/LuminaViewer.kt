@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -53,7 +54,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.Player
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.fossify.gallery.engine.image.NativeThumbnailLoader
 import org.fossify.gallery.engine.video.PlayerPool
@@ -77,6 +80,7 @@ fun LuminaViewer(
     onPageChanged: (Int) -> Unit,
     onPrepareReturnRect: suspend (Long) -> Rect?,
     onHiddenGridIdChange: (Long?) -> Unit,
+    onVideoActionDockVisibleChange: (Boolean) -> Unit,
     onClosingStarted: () -> Unit,
     onDismissComplete: () -> Unit,
     modifier: Modifier = Modifier
@@ -117,6 +121,33 @@ fun LuminaViewer(
     val playerPool = remember(context) { PlayerPool(context) }
     val activePlayer by playerPool.activePlayer.collectAsStateWithLifecycle()
 
+    // Track video playing & scrubbing state for auto-hiding the option dock during playback
+    var isVideoPlaying by remember { mutableStateOf(false) }
+    var isVideoScrubbing by remember { mutableStateOf(false) }
+    var videoActionDockVisible by remember { mutableStateOf(true) }
+
+    DisposableEffect(activePlayer) {
+        val player = activePlayer
+        if (player == null) {
+            isVideoPlaying = false
+            return@DisposableEffect onDispose {}
+        }
+        isVideoPlaying = player.isPlaying || player.playWhenReady
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isVideoPlaying = playing
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) {
+                    isVideoPlaying = false
+                }
+            }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
+
     DisposableEffect(playerPool, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE) playerPool.pause()
@@ -126,10 +157,32 @@ fun LuminaViewer(
             lifecycleOwner.lifecycle.removeObserver(observer)
             playerPool.release()
             onHiddenGridIdChange(null)
+            onVideoActionDockVisibleChange(true)
         }
     }
 
     val currentMedium = mediaList.getOrNull(pagerState.currentPage) ?: mediaList.first()
+
+    // Show option bar initially on video open/pause, then slide down & hide after 1.6s of playback
+    LaunchedEffect(
+        currentMedium.id,
+        currentMedium.isVideo,
+        isVideoPlaying,
+        isVideoScrubbing,
+        state.isDetailsSheetOpen
+    ) {
+        if (!currentMedium.isVideo || !isVideoPlaying || isVideoScrubbing || state.isDetailsSheetOpen) {
+            videoActionDockVisible = true
+        } else {
+            videoActionDockVisible = true
+            delay(1600L)
+            videoActionDockVisible = false
+        }
+    }
+
+    LaunchedEffect(videoActionDockVisible) {
+        onVideoActionDockVisibleChange(videoActionDockVisible)
+    }
 
     LaunchedEffect(viewportSize) {
         if (morphPhase == MorphPhase.OPENING && viewportSize.width > 0 && viewportSize.height > 0) {
@@ -275,6 +328,13 @@ fun LuminaViewer(
     val showChrome = state.isChromeVisible && morphPhase == MorphPhase.IDLE && backdropAlpha.value > 0.92f
     val clipPath = remember { Path() }
 
+    // Smoothly lower the video player controls to bottom when the option dock hides during playback
+    val transportBottomPadding by animateDpAsState(
+        targetValue = if (videoActionDockVisible) 84.dp else 12.dp,
+        animationSpec = LuminaMotion.expressiveSpatial(),
+        label = "video_transport_bottom_pad"
+    )
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -347,7 +407,6 @@ fun LuminaViewer(
             }
         }
 
-        // Clipped Crop <-> Fit morph overlay (zero stretching or letterbox overflow)
         if (morphPhase != MorphPhase.IDLE) {
             val bmp = morphBitmap
             val sRect = morphStartRect
@@ -401,18 +460,22 @@ fun LuminaViewer(
             )
         }
 
+        // Modern video transport controls: glides smoothly down when the option bar hides during playback
         val transportPlayer = activePlayer
         AnimatedVisibility(
             visible = showChrome && currentMedium.isVideo && transportPlayer != null && !state.isDetailsSheetOpen,
-            enter = fadeIn(LuminaMotion.contentEnter),
-            exit = fadeOut(LuminaMotion.contentExit),
+            enter = slideInVertically(LuminaMotion.chromeOffset) { it / 2 } + fadeIn(LuminaMotion.contentEnter),
+            exit = slideOutVertically(LuminaMotion.chromeOffset) { it / 2 } + fadeOut(LuminaMotion.contentExit),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(bottom = 82.dp)
+                .padding(bottom = transportBottomPadding.coerceAtLeast(0.dp))
         ) {
             if (transportPlayer != null) {
-                VideoTransportPill(player = transportPlayer)
+                VideoTransportPill(
+                    player = transportPlayer,
+                    onScrubbingChange = { isVideoScrubbing = it }
+                )
             }
         }
 

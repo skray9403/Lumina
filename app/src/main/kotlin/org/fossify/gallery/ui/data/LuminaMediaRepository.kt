@@ -16,6 +16,8 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -44,7 +46,7 @@ class LuminaMediaRepository(context: Context) {
         MediaStore.MediaColumns.IS_FAVORITE
     )
 
-    val mediaFlow: Flow<List<Medium>> = callbackFlow {
+    private val observerTicks: Flow<Unit> = callbackFlow {
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean, uri: Uri?) {
                 trySend(Unit)
@@ -65,8 +67,6 @@ class LuminaMediaRepository(context: Context) {
         } catch (_: Exception) {
         }
 
-        trySend(Unit)
-
         awaitClose {
             try {
                 contentResolver.unregisterContentObserver(observer)
@@ -74,9 +74,16 @@ class LuminaMediaRepository(context: Context) {
             }
         }
     }
-        .debounce(250)
-        .map { queryAllMedia() }
-        .flowOn(Dispatchers.IO)
+
+    /** Immediate initial query (0ms delay), 250ms debounce strictly on subsequent MediaStore changes. */
+    val mediaFlow: Flow<List<Medium>> = flow {
+        emit(queryAllMedia())
+        emitAll(
+            observerTicks
+                .debounce(250)
+                .map { queryAllMedia() }
+        )
+    }.flowOn(Dispatchers.IO)
 
     suspend fun queryAllMedia(): List<Medium> = withContext(Dispatchers.IO) {
         val mediaList = mutableListOf<Medium>()
@@ -180,9 +187,6 @@ class LuminaMediaRepository(context: Context) {
         }.sortedByDescending { it.latestDateMs }
     }
 
-    /**
-     * Copies media items into an existing or new album folder using scoped MediaStore insert.
-     */
     suspend fun copyMediaToAlbum(
         items: List<Medium>,
         albumName: String,
