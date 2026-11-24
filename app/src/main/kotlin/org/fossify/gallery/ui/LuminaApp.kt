@@ -513,7 +513,3 @@ private fun shareMediaItems(context: Context, items: List<Medium>) {
     }
     context.startActivity(Intent.createChooser(shareIntent, "Share with"))
 }
-</USER_REQUEST>
-<ADDITIONAL_METADATA>
-The current local time is: 2026-11-24T22:12:05+05:30.
-</ADDITIONAL_METADATA>
