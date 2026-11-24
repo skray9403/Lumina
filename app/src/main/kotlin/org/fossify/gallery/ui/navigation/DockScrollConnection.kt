@@ -1,6 +1,5 @@
 package org.fossify.gallery.ui.navigation
 
-import android.os.SystemClock
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -14,84 +13,68 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import kotlin.math.abs
 
 @Stable
 class DockScrollState(
-    private val expandThresholdPx: Float,
-    private val collapseVelocityPxPerSec: Float
+    private val density: Float,
+    private val velocityThresholdDpPerSec: Float = 600f,
+    private val cooldownMillis: Long = 160L
 ) {
+    private data class DeltaSample(val timeNanos: Long, val dyPx: Float)
+
     var isCollapsed by mutableStateOf(false)
         private set
 
-    private var windowStartMs: Long = 0L
-    private var windowDy: Float = 0f
-    private var accumulatedUpPx: Float = 0f
-    private var accumulatedDownPx: Float = 0f
-    private var lastToggleMs: Long = 0L
-
-    private val windowDurationMs = 50L
-    private val toggleCooldownMs = 180L
+    private val windowNanos = 50_000_000L
+    private val minWindowNanos = 16_000_000L
+    private val samples = ArrayDeque<DeltaSample>(16)
+    private var lastTriggerMillis = 0L
 
     val nestedScrollConnection = object : NestedScrollConnection {
         override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-            val dy = available.y
-            if (dy == 0f) return Offset.Zero
+            if (source != NestedScrollSource.UserInput) return Offset.Zero
+            if (available.y == 0f) return Offset.Zero
 
-            val now = SystemClock.uptimeMillis()
-            if (windowStartMs == 0L || (now - windowStartMs) > windowDurationMs || (dy * windowDy < 0f)) {
-                windowStartMs = now
-                windowDy = 0f
+            val nowNanos = System.nanoTime()
+            samples.addLast(DeltaSample(nowNanos, available.y))
+
+            val cutoff = nowNanos - windowNanos
+            while (samples.isNotEmpty() && samples.first().timeNanos < cutoff) {
+                samples.removeFirst()
             }
-            windowDy += dy
 
-            val elapsed = (now - windowStartMs).coerceAtLeast(16L)
-            val canToggle = (now - lastToggleMs) >= toggleCooldownMs
+            if (samples.size < 2) return Offset.Zero
 
-            if (dy < 0f) {
-                accumulatedUpPx = 0f
-                accumulatedDownPx += -dy
-                val windowVelPxPerSec = (-windowDy / elapsed) * 1000f
-                if (!isCollapsed && canToggle &&
-                    (windowVelPxPerSec >= collapseVelocityPxPerSec || accumulatedDownPx >= expandThresholdPx * 3.5f)
-                ) {
-                    isCollapsed = true
-                    lastToggleMs = now
-                    accumulatedDownPx = 0f
-                    windowDy = 0f
-                }
-            } else {
-                accumulatedDownPx = 0f
-                accumulatedUpPx += dy
-                if (isCollapsed && canToggle && accumulatedUpPx >= expandThresholdPx) {
-                    isCollapsed = false
-                    lastToggleMs = now
-                    accumulatedUpPx = 0f
-                    windowDy = 0f
-                }
+            val elapsedNanos = nowNanos - samples.first().timeNanos
+            if (elapsedNanos < minWindowNanos) return Offset.Zero
+
+            var sumDyPx = 0f
+            for (sample in samples) {
+                sumDyPx += sample.dyPx
+            }
+
+            val elapsedSec = elapsedNanos / 1_000_000_000f
+            val velocityDpPerSec = (sumDyPx / density) / elapsedSec
+
+            val nowMillis = nowNanos / 1_000_000L
+            if (nowMillis - lastTriggerMillis >= cooldownMillis &&
+                abs(velocityDpPerSec) >= velocityThresholdDpPerSec
+            ) {
+                lastTriggerMillis = nowMillis
+                isCollapsed = velocityDpPerSec < 0f
             }
             return Offset.Zero
         }
 
-        override suspend fun onPreFling(available: Velocity): Velocity {
-            val now = SystemClock.uptimeMillis()
-            if ((now - lastToggleMs) < toggleCooldownMs) return Velocity.Zero
-
-            if (available.y <= -collapseVelocityPxPerSec && !isCollapsed) {
-                isCollapsed = true
-                lastToggleMs = now
-            } else if (available.y >= collapseVelocityPxPerSec * 0.55f && isCollapsed) {
-                isCollapsed = false
-                lastToggleMs = now
-            }
+        override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+            samples.clear()
             return Velocity.Zero
         }
     }
 
     fun expand() {
-        windowStartMs = 0L
-        windowDy = 0f
-        accumulatedUpPx = 0f
-        accumulatedDownPx = 0f
+        samples.clear()
         isCollapsed = false
     }
 }
@@ -101,13 +84,12 @@ fun rememberDockScrollState(
     expandThreshold: Dp = 32.dp,
     collapseVelocityDpPerSec: Dp = 600.dp
 ): DockScrollState {
-    val density = LocalDensity.current
-    val expandPx = with(density) { expandThreshold.toPx() }
-    val velocityPx = with(density) { collapseVelocityDpPerSec.toPx() }
-    return remember(expandPx, velocityPx) {
+    val density = LocalDensity.current.density
+    val thresholdValue = collapseVelocityDpPerSec.value
+    return remember(density, thresholdValue) {
         DockScrollState(
-            expandThresholdPx = expandPx,
-            collapseVelocityPxPerSec = velocityPx
+            density = density,
+            velocityThresholdDpPerSec = thresholdValue
         )
     }
 }

@@ -3,13 +3,19 @@ package org.fossify.gallery.ui.navigation
 import android.content.Context
 import android.content.Intent
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -18,10 +24,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,6 +37,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,14 +46,15 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PhotoSizeSelectActual
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -88,10 +98,12 @@ import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.lerp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.delay
 import org.fossify.gallery.engine.share.QuickShareTarget
 import org.fossify.gallery.engine.share.RecentShareStore
 import org.fossify.gallery.models.Medium
@@ -103,7 +115,9 @@ import org.fossify.gallery.ui.theme.rememberLuminaPillTokens
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private val ExpressiveSpatialEasing = CubicBezierEasing(0.2f, 0.0f, 0.0f, 1.0f)
+private val DockHeight = 58.dp
+private val InnerPillHeight = 48.dp
+private val SlotGap = 10.dp
 
 @Immutable
 sealed interface DockMode {
@@ -153,7 +167,7 @@ fun LuminaBottomDock(
         colorSchemeOverride = if (isViewer) darkDynamicScheme else null
     )
 
-    val hiddenOffsetPx = with(density) { 120.dp.toPx() }
+    val hiddenOffsetPx = with(density) { 128.dp.toPx() }
     val slideProgress by animateFloatAsState(
         targetValue = if (visible) 0f else 1f,
         animationSpec = LuminaMotion.chromeSlide,
@@ -162,21 +176,21 @@ fun LuminaBottomDock(
 
     val searchProgress by animateFloatAsState(
         targetValue = if (isSearchExpanded) 1f else 0f,
-        animationSpec = tween(durationMillis = 220, easing = ExpressiveSpatialEasing),
+        animationSpec = LuminaMotion.expressiveSpatial(),
         label = "dock_search_morph"
     )
 
     val containerColor by animateColorAsState(
         targetValue = pillTokens.containerColor,
-        animationSpec = LuminaMotion.colorTransition,
+        animationSpec = LuminaMotion.noBounceColor(),
         label = "dock_container_color"
     )
 
-    val barHeightPx = with(density) { 54.dp.roundToPx() }
-    val slotGapPx = with(density) { 10.dp.roundToPx() }
+    val barHeightPx = with(density) { DockHeight.roundToPx() }
+    val slotGapPx = with(density) { SlotGap.roundToPx() }
     val hasTrailingSlot = mode is DockMode.Home || mode is DockMode.Viewer
 
-    Box(
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
@@ -186,27 +200,73 @@ fun LuminaBottomDock(
                 translationY = slideProgress * hiddenOffsetPx
                 alpha = (1f - slideProgress * 1.15f).coerceIn(0f, 1f)
             },
-        contentAlignment = Alignment.BottomCenter
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Custom 2-slot morphing Layout: Search circle expands smoothly across full width while left pill fades/shrinks
+        // Independent offset-gated Scroll-to-Top bubble floating 10dp above dock (Δy = 0)
+        AnimatedVisibility(
+            visible = homeMode != null && homeMode.showScrollToTop && !isSearchExpanded,
+            enter = fadeIn(tween(120)) +
+                scaleIn(LuminaMotion.expressiveBouncy(), initialScale = 0.72f) +
+                slideInVertically(LuminaMotion.expressiveSpatial()) { it / 2 },
+            exit = fadeOut(tween(90)) +
+                scaleOut(tween(100), targetScale = 0.75f) +
+                slideOutVertically(tween(100)) { it / 2 }
+        ) {
+            val topInteraction = remember { MutableInteractionSource() }
+            Box(modifier = Modifier.padding(bottom = 10.dp)) {
+                Surface(
+                    shape = CircleShape,
+                    color = containerColor,
+                    contentColor = pillTokens.contentColor,
+                    border = pillTokens.border,
+                    shadowElevation = 5.dp,
+                    modifier = Modifier
+                        .size(42.dp)
+                        .pressScale(topInteraction, pressedScale = 0.88f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                            .clickable(
+                                interactionSource = topInteraction,
+                                indication = ripple(bounded = true),
+                                role = Role.Button,
+                                onClick = { homeMode?.onScrollToTop?.invoke() }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowUpward,
+                            contentDescription = "Scroll to top",
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Persistent 2-slot expressive morphing cluster
         Layout(
             modifier = Modifier.fillMaxWidth(),
             content = {
                 // Child 0: Primary morphing capsule
                 Surface(
-                    shape = RoundedCornerShape(32.dp),
+                    shape = CircleShape,
                     color = containerColor,
                     border = pillTokens.border,
                     shadowElevation = pillTokens.shadowElevation,
-                    modifier = Modifier.height(54.dp)
+                    modifier = Modifier.height(DockHeight)
                 ) {
                     AnimatedContent(
                         targetState = mode,
                         contentKey = { it::class },
                         transitionSpec = {
-                            (fadeIn(LuminaMotion.throughZeroEnter) togetherWith
-                                fadeOut(LuminaMotion.throughZeroExit))
-                                .using(SizeTransform(clip = false) { _, _ -> LuminaMotion.dockSizeSpec })
+                            (fadeIn(LuminaMotion.throughZeroEnter) +
+                                scaleIn(LuminaMotion.throughZeroEnter, initialScale = 0.94f)) togetherWith
+                                (fadeOut(LuminaMotion.throughZeroExit) +
+                                    scaleOut(LuminaMotion.throughZeroExit, targetScale = 0.94f)) using
+                                SizeTransform(clip = false) { _, _ -> LuminaMotion.dockSizeSpec }
                         },
                         contentAlignment = Alignment.Center,
                         label = "dock_mode_morph"
@@ -226,8 +286,7 @@ fun LuminaBottomDock(
 
                             is DockMode.Viewer -> ViewerDockContent(
                                 medium = targetMode.medium,
-                                onSurfaceTint = darkDynamicScheme.onSurface,
-                                deleteTint = darkDynamicScheme.error,
+                                darkScheme = darkDynamicScheme,
                                 onAddToAlbumClick = targetMode.onAddToAlbumClick,
                                 onDeleteClick = targetMode.onDeleteClick,
                                 context = context
@@ -236,36 +295,31 @@ fun LuminaBottomDock(
                     }
                 }
 
-                // Child 1: Trailing slot (Morphing Search/ScrollTop in Home; Popup-anchored Smart Share FAB in Viewer)
+                // Child 1: Trailing detached pill (Dedicated Search morph in Home; Expressive FAB Menu Share in Viewer)
                 if (hasTrailingSlot) {
                     when (mode) {
-                        is DockMode.Home -> MorphingSearchOrFab(
+                        is DockMode.Home -> MorphingSearchPill(
                             searchProgress = searchProgress,
                             isSearchActive = mode.isSearchActive,
-                            showScrollToTop = mode.showScrollToTop,
                             query = mode.searchQuery,
                             placeholder = if (mode.activeAlbumName != null) {
                                 "Search in ${mode.activeAlbumName}..."
                             } else {
                                 "Search photos, videos, albums..."
                             },
-                            containerColor = containerColor,
+                            expandedContainerColor = containerColor,
                             contentColor = pillTokens.contentColor,
                             secondaryColor = pillTokens.secondaryContentColor,
                             border = pillTokens.border,
                             shadowElevation = pillTokens.shadowElevation,
                             onSearchOpen = mode.onSearchOpen,
                             onSearchClose = mode.onSearchClose,
-                            onQueryChange = mode.onSearchQueryChange,
-                            onScrollToTop = mode.onScrollToTop
+                            onQueryChange = mode.onSearchQueryChange
                         )
 
-                        is DockMode.Viewer -> SmartShareFab(
+                        is DockMode.Viewer -> ExpressiveSmartShareFab(
                             medium = mode.medium,
-                            containerColor = darkDynamicScheme.primaryContainer,
-                            contentColor = darkDynamicScheme.onPrimaryContainer,
-                            popupContainerColor = containerColor,
-                            popupContentColor = darkDynamicScheme.onSurface,
+                            darkScheme = darkDynamicScheme,
                             border = pillTokens.border,
                             shadowElevation = pillTokens.shadowElevation
                         )
@@ -318,32 +372,28 @@ fun LuminaBottomDock(
 }
 
 /**
- * Single Surface that smoothly expands from a 54dp circular Search/ScrollTop button into
- * a full-width bottom Search field. Uses local synchronous TextFieldValue so async ViewModel
- * filtering never resets cursor position to index 0.
+ * Dedicated right Search FAB (secondaryContainer tonal contrast) smoothly morphing
+ * via expressive spring into a full-width bottom Search field with synchronous cursor handling.
  */
 @Composable
-private fun MorphingSearchOrFab(
+private fun MorphingSearchPill(
     searchProgress: Float,
     isSearchActive: Boolean,
-    showScrollToTop: Boolean,
     query: String,
     placeholder: String,
-    containerColor: Color,
+    expandedContainerColor: Color,
     contentColor: Color,
     secondaryColor: Color,
     border: BorderStroke,
     shadowElevation: Dp,
     onSearchOpen: () -> Unit,
     onSearchClose: () -> Unit,
-    onQueryChange: (String) -> Unit,
-    onScrollToTop: () -> Unit
+    onQueryChange: (String) -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val focusManager = LocalFocusManager.current
     val focusRequester = remember { FocusRequester() }
 
-    // Local synchronous TextFieldValue eliminates cursor-jump-to-left during async filtering
     var textFieldValue by remember {
         mutableStateOf(TextFieldValue(text = query, selection = TextRange(query.length)))
     }
@@ -363,22 +413,21 @@ private fun MorphingSearchOrFab(
         }
     }
 
-    val isAccentScrollTop = showScrollToTop && !isSearchActive && searchProgress < 0.1f
     val bg by animateColorAsState(
-        targetValue = if (isAccentScrollTop) MaterialTheme.colorScheme.primaryContainer else containerColor,
-        animationSpec = LuminaMotion.colorTransition,
-        label = "search_fab_bg"
+        targetValue = if (isSearchActive) expandedContainerColor else MaterialTheme.colorScheme.secondaryContainer,
+        animationSpec = LuminaMotion.noBounceColor(),
+        label = "search_pill_bg"
     )
     val iconTint by animateColorAsState(
-        targetValue = if (isAccentScrollTop) MaterialTheme.colorScheme.onPrimaryContainer else contentColor,
-        animationSpec = LuminaMotion.colorTransition,
-        label = "search_fab_tint"
+        targetValue = if (isSearchActive) secondaryColor else MaterialTheme.colorScheme.onSecondaryContainer,
+        animationSpec = LuminaMotion.noBounceColor(),
+        label = "search_pill_tint"
     )
 
     Surface(
-        shape = RoundedCornerShape(28.dp),
+        shape = CircleShape,
         color = bg,
-        border = border,
+        border = if (isSearchActive) border else null,
         shadowElevation = shadowElevation,
         modifier = Modifier
             .fillMaxSize()
@@ -393,16 +442,14 @@ private fun MorphingSearchOrFab(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(RoundedCornerShape(28.dp))
+                .clip(CircleShape)
                 .then(
                     if (!isSearchActive) {
                         Modifier.clickable(
                             interactionSource = interactionSource,
                             indication = ripple(bounded = true),
                             role = Role.Button,
-                            onClick = {
-                                if (showScrollToTop) onScrollToTop() else onSearchOpen()
-                            }
+                            onClick = onSearchOpen
                         )
                     } else {
                         Modifier
@@ -410,8 +457,7 @@ private fun MorphingSearchOrFab(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            // Collapsed circular FAB icon (fades out cleanly as width expands)
-            val fabAlpha = (1f - searchProgress * 3.2f).coerceIn(0f, 1f)
+            val fabAlpha = (1f - searchProgress * 3.0f).coerceIn(0f, 1f)
             if (fabAlpha > 0.01f) {
                 Box(
                     modifier = Modifier
@@ -419,32 +465,22 @@ private fun MorphingSearchOrFab(
                         .graphicsLayer { alpha = fabAlpha },
                     contentAlignment = Alignment.Center
                 ) {
-                    AnimatedContent(
-                        targetState = showScrollToTop,
-                        transitionSpec = {
-                            fadeIn(LuminaMotion.throughZeroEnter) togetherWith
-                                fadeOut(LuminaMotion.throughZeroExit)
-                        },
-                        label = "fab_icon_swap"
-                    ) { scrollTop ->
-                        Icon(
-                            imageVector = if (scrollTop) Icons.Default.KeyboardArrowUp else Icons.Default.Search,
-                            contentDescription = if (scrollTop) "Scroll to top" else "Search",
-                            tint = iconTint,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Search",
+                        tint = iconTint,
+                        modifier = Modifier.size(23.dp)
+                    )
                 }
             }
 
-            // Expanded Search Row (fades in smoothly as capsule opens to full width)
-            val fieldAlpha = ((searchProgress - 0.28f) / 0.72f).coerceIn(0f, 1f)
+            val fieldAlpha = ((searchProgress - 0.25f) / 0.75f).coerceIn(0f, 1f)
             if (fieldAlpha > 0.01f) {
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer { alpha = fieldAlpha }
-                        .padding(horizontal = 14.dp),
+                        .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -452,7 +488,7 @@ private fun MorphingSearchOrFab(
                         imageVector = Icons.Default.Search,
                         contentDescription = "Search",
                         tint = secondaryColor,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(21.dp)
                     )
 
                     Box(
@@ -511,7 +547,7 @@ private fun MorphingSearchOrFab(
                             imageVector = Icons.Default.Close,
                             contentDescription = if (textFieldValue.text.isNotEmpty()) "Clear" else "Close search",
                             tint = secondaryColor,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(19.dp)
                         )
                     }
                 }
@@ -521,20 +557,17 @@ private fun MorphingSearchOrFab(
 }
 
 /**
- * Viewer Smart Share FAB:
- * - Always occupies strictly 54dp x 54dp inside the dock Row (Popup floats independently above it,
- *   so the bottom bar NEVER moves vertically).
- * - Tap: opens native Android Sharesheet.
- * - Single-motion press + drag up + lift: opens recent-apps stack directly above FAB, highlights
- *   the app under the finger with haptic feedback, and fires direct share on finger release.
+ * Material 3 Expressive FAB Menu Share button:
+ * - Normal tap: launches native Android Sharesheet.
+ * - Single-motion press + drag up + release: cascades staggered Material 3 Expressive
+ *   full-capsule [Icon + App Name] pills right above the FAB while morphing the FAB to the
+ *   circular '×' state; sliding over any pill highlights it with haptic feedback and executes
+ *   direct share on finger lift. Zero layout impact on the bottom bar.
  */
 @Composable
-private fun SmartShareFab(
+private fun ExpressiveSmartShareFab(
     medium: Medium,
-    containerColor: Color,
-    contentColor: Color,
-    popupContainerColor: Color,
-    popupContentColor: Color,
+    darkScheme: ColorScheme,
     border: BorderStroke,
     shadowElevation: Dp
 ) {
@@ -550,7 +583,6 @@ private fun SmartShareFab(
     var isQuickMenuOpen by remember { mutableStateOf(false) }
     var hoveredIndex by remember { mutableIntStateOf(-1) }
 
-    // Load only per MIME type (never keyed on isQuickMenuOpen so pointerInput is never cancelled mid-drag)
     LaunchedEffect(medium.mimeType) {
         recentTargets = RecentShareStore.loadRecentTargets(context, medium.mimeType)
     }
@@ -560,11 +592,13 @@ private fun SmartShareFab(
         hoveredIndex = -1
     }
 
-    val popupGapPx = with(density) { 10.dp.roundToPx() }
-    val popupPadPx = with(density) { 6.dp.toPx() }
-    val itemStridePx = with(density) { 48.dp.toPx() }
+    val popupGapPx = with(density) { 12.dp.roundToPx() }
+    val itemHeightDp = 52.dp
+    val itemGapDp = 8.dp
+    val itemStridePx = with(density) { (itemHeightDp + itemGapDp).toPx() }
     val dragOpenThresholdPx = with(density) { 14.dp.toPx() }
-    val maxHorizontalDriftPx = with(density) { 96.dp.toPx() }
+    val maxLeftDriftPx = with(density) { 230.dp.toPx() }
+    val maxRightDriftPx = with(density) { 44.dp.toPx() }
 
     val popupPositionProvider = remember(popupGapPx) {
         object : PopupPositionProvider {
@@ -574,17 +608,32 @@ private fun SmartShareFab(
                 layoutDirection: LayoutDirection,
                 popupContentSize: IntSize
             ): IntOffset {
-                // Align popup right edge with FAB right edge so label pills expand cleanly to the left
                 val x = (anchorBounds.right - popupContentSize.width)
-                    .coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+                    .coerceIn(12, (windowSize.width - popupContentSize.width).coerceAtLeast(12))
                 val y = (anchorBounds.top - popupContentSize.height - popupGapPx).coerceAtLeast(0)
                 return IntOffset(x, y)
             }
         }
     }
 
+    val fabBg by animateColorAsState(
+        targetValue = if (isQuickMenuOpen) darkScheme.primary else darkScheme.primaryContainer,
+        animationSpec = LuminaMotion.noBounceColor(),
+        label = "share_fab_bg"
+    )
+    val fabTint by animateColorAsState(
+        targetValue = if (isQuickMenuOpen) darkScheme.onPrimary else darkScheme.onPrimaryContainer,
+        animationSpec = LuminaMotion.noBounceColor(),
+        label = "share_fab_tint"
+    )
+    val fabRotation by animateFloatAsState(
+        targetValue = if (isQuickMenuOpen) 90f else 0f,
+        animationSpec = LuminaMotion.expressiveBouncy(),
+        label = "share_fab_rot"
+    )
+
     Box(
-        modifier = Modifier.size(54.dp),
+        modifier = Modifier.size(DockHeight),
         contentAlignment = Alignment.Center
     ) {
         if (isQuickMenuOpen && recentTargets.isNotEmpty()) {
@@ -593,63 +642,20 @@ private fun SmartShareFab(
                 properties = PopupProperties(focusable = false, clippingEnabled = false)
             ) {
                 Column(
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(itemGapDp),
                     horizontalAlignment = Alignment.End
                 ) {
-                    // Render top-to-bottom so index 0 (most recent) sits closest to the FAB / thumb
+                    // Index 0 sits closest to thumb at bottom; cascade staggers bottom -> top
                     recentTargets.asReversed().forEachIndexed { visualIdx, target ->
                         val logicalIdx = recentTargets.lastIndex - visualIdx
                         val isHovered = logicalIdx == hoveredIndex
-                        val itemScale by animateFloatAsState(
-                            targetValue = if (isHovered) 1.18f else 1f,
-                            animationSpec = LuminaMotion.responsiveSpring(),
-                            label = "quick_share_scale_$logicalIdx"
+                        ExpressiveShareMenuItemPill(
+                            target = target,
+                            staggerIndex = logicalIdx,
+                            isHovered = isHovered,
+                            darkScheme = darkScheme,
+                            height = itemHeightDp
                         )
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            if (isHovered) {
-                                Surface(
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = popupContainerColor,
-                                    border = border,
-                                    shadowElevation = 4.dp
-                                ) {
-                                    Text(
-                                        text = target.label,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = popupContentColor,
-                                        maxLines = 1,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                    )
-                                }
-                            }
-
-                            Surface(
-                                shape = CircleShape,
-                                color = if (isHovered) containerColor else popupContainerColor,
-                                border = border,
-                                shadowElevation = shadowElevation,
-                                modifier = Modifier
-                                    .size(46.dp)
-                                    .graphicsLayer {
-                                        scaleX = itemScale
-                                        scaleY = itemScale
-                                    }
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Image(
-                                        bitmap = target.icon,
-                                        contentDescription = target.label,
-                                        modifier = Modifier
-                                            .size(30.dp)
-                                            .clip(CircleShape)
-                                    )
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -657,11 +663,11 @@ private fun SmartShareFab(
 
         Surface(
             shape = CircleShape,
-            color = containerColor,
-            border = border,
+            color = fabBg,
+            border = if (isQuickMenuOpen) null else border,
             shadowElevation = shadowElevation,
             modifier = Modifier
-                .size(54.dp)
+                .size(DockHeight)
                 .pressScale(interactionSource, pressedScale = 0.88f)
                 .pointerInput(medium.id) {
                     awaitEachGesture {
@@ -690,12 +696,13 @@ private fun SmartShareFab(
                             if (dragMenuActive) {
                                 change.consume()
                                 val yAboveFabTop = -change.position.y
-                                val dxFromFabCenter = abs(change.position.x - size.width / 2f)
-                                val distIntoStack = yAboveFabTop - popupGapPx - popupPadPx
+                                val posX = change.position.x
+                                val inHorizontalBand = posX >= -maxLeftDriftPx && posX <= size.width + maxRightDriftPx
+                                val distIntoStack = yAboveFabTop - popupGapPx
                                 val nextHover = if (
-                                    dxFromFabCenter <= maxHorizontalDriftPx &&
-                                    distIntoStack >= -itemStridePx * 0.25f &&
-                                    distIntoStack <= targets.size * itemStridePx + itemStridePx * 0.35f
+                                    inHorizontalBand &&
+                                    distIntoStack >= -itemStridePx * 0.2f &&
+                                    distIntoStack <= targets.size * itemStridePx + itemStridePx * 0.3f
                                 ) {
                                     (distIntoStack.coerceAtLeast(0f) / itemStridePx)
                                         .toInt()
@@ -727,21 +734,97 @@ private fun SmartShareFab(
                     }
                 }
         ) {
-            Box(contentAlignment = Alignment.Center) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.graphicsLayer { rotationZ = fabRotation }
+            ) {
                 Icon(
-                    imageVector = Icons.Default.Share,
+                    imageVector = if (isQuickMenuOpen) Icons.Default.Close else Icons.Default.Share,
                     contentDescription = "Share (drag up for recent apps)",
-                    tint = contentColor,
-                    modifier = Modifier.size(22.dp)
+                    tint = fabTint,
+                    modifier = Modifier.size(23.dp)
                 )
             }
         }
     }
 }
 
+@Composable
+private fun ExpressiveShareMenuItemPill(
+    target: QuickShareTarget,
+    staggerIndex: Int,
+    isHovered: Boolean,
+    darkScheme: ColorScheme,
+    height: Dp
+) {
+    val density = LocalDensity.current
+    val appear = remember { Animatable(0f) }
+
+    LaunchedEffect(Unit) {
+        delay(staggerIndex * 26L)
+        appear.animateTo(1f, LuminaMotion.expressiveBouncy())
+    }
+
+    val hoverScale by animateFloatAsState(
+        targetValue = if (isHovered) 1.06f else 1f,
+        animationSpec = LuminaMotion.expressiveBouncy(),
+        label = "share_pill_hover_scale"
+    )
+    val pillBg by animateColorAsState(
+        targetValue = if (isHovered) darkScheme.primary else darkScheme.primaryContainer,
+        animationSpec = LuminaMotion.noBounceColor(),
+        label = "share_pill_bg"
+    )
+    val pillFg by animateColorAsState(
+        targetValue = if (isHovered) darkScheme.onPrimary else darkScheme.onPrimaryContainer,
+        animationSpec = LuminaMotion.noBounceColor(),
+        label = "share_pill_fg"
+    )
+    val enterOffsetPx = with(density) { 18.dp.toPx() }
+
+    Surface(
+        shape = CircleShape,
+        color = pillBg,
+        contentColor = pillFg,
+        shadowElevation = if (isHovered) 10.dp else 6.dp,
+        modifier = Modifier
+            .height(height)
+            .graphicsLayer {
+                val p = appear.value
+                val s = lerp(0.80f, 1f, p) * hoverScale
+                scaleX = s
+                scaleY = s
+                translationY = (1f - p) * enterOffsetPx
+                alpha = p.coerceIn(0f, 1f)
+            }
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 20.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Image(
+                bitmap = target.icon,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+            )
+            Text(
+                text = target.label,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = pillFg,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
 /**
- * Unified expressive tab strip with a single sliding active indicator pill and continuous
- * float-driven label collapse (zero clipping of sibling tabs).
+ * Substantial 58dp expressive navigation dock with spring-driven sliding active indicator,
+ * active icon scale pop, and smooth spring scroll collapse.
  */
 @Composable
 private fun HomeDockContent(
@@ -752,29 +835,26 @@ private fun HomeDockContent(
     val density = LocalDensity.current
     val collapseProgress by animateFloatAsState(
         targetValue = if (isCollapsed) 1f else 0f,
-        animationSpec = tween(durationMillis = 200, easing = ExpressiveSpatialEasing),
+        animationSpec = LuminaMotion.expressiveSpatial(),
         label = "dock_collapse_progress"
     )
     val selectedPosition by animateFloatAsState(
         targetValue = if (currentTab == GalleryTab.PHOTOS) 0f else 1f,
-        animationSpec = tween(durationMillis = 200, easing = ExpressiveSpatialEasing),
+        animationSpec = LuminaMotion.expressiveSpatial(),
         label = "dock_indicator_slide"
     )
 
-    val padPx = with(density) { 5.dp.roundToPx() }
     val gapPx = with(density) { 4.dp.roundToPx() }
-    val pillHeightPx = with(density) { 44.dp.roundToPx() }
+    val pillHeightPx = with(density) { InnerPillHeight.roundToPx() }
 
     Layout(
         modifier = Modifier.padding(horizontal = 5.dp, vertical = 5.dp),
         content = {
-            // Child 0: Single sliding active indicator pill behind both tabs
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(24.dp))
+                    .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primaryContainer)
             )
-            // Child 1: Photos tab
             SlidingDockTab(
                 title = "Photos",
                 icon = Icons.Default.PhotoSizeSelectActual,
@@ -782,7 +862,6 @@ private fun HomeDockContent(
                 collapseProgress = collapseProgress,
                 onClick = { onTabSelect(GalleryTab.PHOTOS) }
             )
-            // Child 2: Albums tab
             SlidingDockTab(
                 title = "Albums",
                 icon = Icons.Default.PhotoLibrary,
@@ -831,18 +910,23 @@ private fun SlidingDockTab(
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant
         },
-        animationSpec = LuminaMotion.colorTransition,
+        animationSpec = LuminaMotion.noBounceColor(),
         label = "tab_content_color"
     )
+    val iconScale by animateFloatAsState(
+        targetValue = if (isSelected) 1.08f else 1f,
+        animationSpec = LuminaMotion.expressiveBouncy(),
+        label = "tab_icon_pop"
+    )
 
-    val horizontalPad = lerp(16f, 13f, collapseProgress).dp
-    val iconTextGap = (7f * (1f - collapseProgress)).dp
+    val horizontalPad = lerp(18f, 15f, collapseProgress).dp
+    val iconTextGap = (8f * (1f - collapseProgress)).dp
 
     Row(
         modifier = Modifier
-            .height(44.dp)
-            .pressScale(interactionSource)
-            .clip(RoundedCornerShape(24.dp))
+            .height(InnerPillHeight)
+            .pressScale(interactionSource, pressedScale = 0.93f)
+            .clip(CircleShape)
             .clickable(
                 interactionSource = interactionSource,
                 indication = ripple(bounded = true),
@@ -856,10 +940,14 @@ private fun SlidingDockTab(
             imageVector = icon,
             contentDescription = title,
             tint = contentColor,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier
+                .size(22.dp)
+                .graphicsLayer {
+                    scaleX = iconScale
+                    scaleY = iconScale
+                }
         )
 
-        // Smooth width + alpha label collapse without clipping sibling tabs
         Layout(
             modifier = Modifier.padding(start = iconTextGap),
             content = {
@@ -867,6 +955,8 @@ private fun SlidingDockTab(
                     text = title,
                     color = contentColor,
                     style = MaterialTheme.typography.labelLarge,
+                    fontSize = 14.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                     maxLines = 1,
                     softWrap = false
                 )
@@ -875,7 +965,7 @@ private fun SlidingDockTab(
             val p = measurables[0].measure(constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity))
             val currentW = (p.width * (1f - collapseProgress)).roundToInt().coerceAtLeast(0)
             layout(currentW, p.height) {
-                val labelAlpha = (1f - collapseProgress * 1.8f).coerceIn(0f, 1f)
+                val labelAlpha = (1f - collapseProgress * 1.7f).coerceIn(0f, 1f)
                 if (labelAlpha > 0.01f) {
                     p.placeWithLayer(0, 0) { alpha = labelAlpha }
                 }
@@ -884,56 +974,80 @@ private fun SlidingDockTab(
     }
 }
 
+/**
+ * Connected Material 3 Expressive 3-pill selection bar with distinct tonal containers.
+ */
 @Composable
 private fun SelectionDockContent(
     onShare: () -> Unit,
     onAddToAlbum: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val scheme = MaterialTheme.colorScheme
     Row(
-        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+        modifier = Modifier.padding(horizontal = 5.dp, vertical = 5.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        DockActionButton(
+        ConnectedActionPill(
             icon = Icons.Default.Share,
+            label = null,
             contentDescription = "Share selected",
-            tint = MaterialTheme.colorScheme.onSurface,
+            containerColor = scheme.surfaceContainerHighest,
+            contentColor = scheme.onSurface,
+            outerStartRadius = 24.dp,
+            outerEndRadius = 10.dp,
             onClick = onShare
         )
-        DockLabeledActionButton(
+        ConnectedActionPill(
             icon = Icons.Default.Add,
             label = "Add to",
-            tint = MaterialTheme.colorScheme.onSurface,
+            contentDescription = "Add selected to album",
+            containerColor = scheme.secondaryContainer,
+            contentColor = scheme.onSecondaryContainer,
+            outerStartRadius = 10.dp,
+            outerEndRadius = 10.dp,
             onClick = onAddToAlbum
         )
-        DockActionButton(
+        ConnectedActionPill(
             icon = Icons.Default.Delete,
+            label = null,
             contentDescription = "Delete selected",
-            tint = MaterialTheme.colorScheme.error,
+            containerColor = scheme.errorContainer.copy(alpha = 0.72f),
+            contentColor = scheme.onErrorContainer,
+            outerStartRadius = 10.dp,
+            outerEndRadius = 24.dp,
             onClick = onDelete
         )
     }
 }
 
+/**
+ * Connected Material 3 Expressive Viewer bar:
+ * 3 visually distinct tonal capsules with asymmetric outer/inner corner radii that morph on press.
+ * [ Edit (neutral tonal) | + Add to (secondaryContainer hero) | Delete (error-tinted) ]
+ */
 @Composable
 private fun ViewerDockContent(
     medium: Medium,
-    onSurfaceTint: Color,
-    deleteTint: Color,
+    darkScheme: ColorScheme,
     onAddToAlbumClick: () -> Unit,
     onDeleteClick: () -> Unit,
     context: Context
 ) {
     Row(
-        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+        modifier = Modifier.padding(horizontal = 5.dp, vertical = 5.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        DockActionButton(
+        ConnectedActionPill(
             icon = Icons.Default.Edit,
+            label = null,
             contentDescription = "Edit",
-            tint = onSurfaceTint,
+            containerColor = darkScheme.surfaceContainerHighest,
+            contentColor = darkScheme.onSurface,
+            outerStartRadius = 24.dp,
+            outerEndRadius = 10.dp,
             onClick = {
                 val editIntent = Intent(Intent.ACTION_EDIT).apply {
                     setDataAndType(medium.uri, medium.mimeType)
@@ -942,87 +1056,100 @@ private fun ViewerDockContent(
                 context.startActivity(Intent.createChooser(editIntent, "Edit with"))
             }
         )
-        DockLabeledActionButton(
+        ConnectedActionPill(
             icon = Icons.Default.Add,
             label = "Add to",
-            tint = onSurfaceTint,
+            contentDescription = "Add to album",
+            containerColor = darkScheme.secondaryContainer,
+            contentColor = darkScheme.onSecondaryContainer,
+            outerStartRadius = 10.dp,
+            outerEndRadius = 10.dp,
             onClick = onAddToAlbumClick
         )
-        DockActionButton(
+        ConnectedActionPill(
             icon = Icons.Default.Delete,
+            label = null,
             contentDescription = "Delete",
-            tint = deleteTint,
+            containerColor = darkScheme.errorContainer.copy(alpha = 0.55f),
+            contentColor = darkScheme.onErrorContainer,
+            outerStartRadius = 10.dp,
+            outerEndRadius = 24.dp,
             onClick = onDeleteClick
         )
     }
 }
 
 @Composable
-private fun DockLabeledActionButton(
+private fun ConnectedActionPill(
     icon: ImageVector,
-    label: String,
-    tint: Color,
+    label: String?,
+    contentDescription: String,
+    containerColor: Color,
+    contentColor: Color,
+    outerStartRadius: Dp,
+    outerEndRadius: Dp,
     onClick: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    Row(
+    val isPressed by interactionSource.collectIsPressedAsState()
+
+    // Expressive corner-radius morph on touch-down (connected inner 10dp softens to 18dp)
+    val startCorner by animateDpAsState(
+        targetValue = if (isPressed) 18.dp else outerStartRadius,
+        animationSpec = LuminaMotion.expressiveSnappy(),
+        label = "connected_start_corner"
+    )
+    val endCorner by animateDpAsState(
+        targetValue = if (isPressed) 18.dp else outerEndRadius,
+        animationSpec = LuminaMotion.expressiveSnappy(),
+        label = "connected_end_corner"
+    )
+    val shape = RoundedCornerShape(
+        topStart = startCorner,
+        bottomStart = startCorner,
+        topEnd = endCorner,
+        bottomEnd = endCorner
+    )
+
+    Box(
         modifier = Modifier
-            .height(44.dp)
-            .widthIn(min = 44.dp)
-            .pressScale(interactionSource, pressedScale = 0.90f)
-            .clip(RoundedCornerShape(22.dp))
+            .height(InnerPillHeight)
+            .then(
+                if (label == null) Modifier.width(56.dp) else Modifier.widthIn(min = 104.dp)
+            )
+            .pressScale(interactionSource, pressedScale = 0.92f)
+            .clip(shape)
+            .background(containerColor)
             .clickable(
                 interactionSource = interactionSource,
                 indication = ripple(bounded = true),
                 role = Role.Button,
                 onClick = onClick
             )
-            .padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp)
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            tint = tint,
-            modifier = Modifier.size(20.dp)
-        )
-        Text(
-            text = label,
-            color = tint,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1
-        )
-    }
-}
-
-@Composable
-private fun DockActionButton(
-    icon: ImageVector,
-    contentDescription: String,
-    tint: Color,
-    onClick: () -> Unit
-) {
-    val interactionSource = remember { MutableInteractionSource() }
-    Box(
-        modifier = Modifier
-            .size(44.dp)
-            .pressScale(interactionSource, pressedScale = 0.88f)
-            .clip(CircleShape)
-            .clickable(
-                interactionSource = interactionSource,
-                indication = ripple(bounded = true),
-                role = Role.Button,
-                onClick = onClick
-            ),
+            .padding(horizontal = if (label == null) 0.dp else 16.dp),
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = contentDescription,
-            tint = tint,
-            modifier = Modifier.size(22.dp)
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = contentColor,
+                modifier = Modifier.size(if (label == null) 21.dp else 20.dp)
+            )
+            if (label != null) {
+                Text(
+                    text = label,
+                    color = contentColor,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+        }
     }
 }
