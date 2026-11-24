@@ -58,7 +58,7 @@ jobs:
             :app:lintDebug 2>&1 | tee gradle-build.log
 
       - name: Upload Lumina debug APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lumina-debug
           path: app/build/outputs/apk/debug/*.apk
@@ -66,7 +66,7 @@ jobs:
           retention-days: 14
 
       - name: Upload Lumina release APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lumina-release
           path: app/build/outputs/apk/release/*.apk
@@ -75,7 +75,7 @@ jobs:
 
       - name: Upload Gradle build log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lumina-gradle-build-log
           path: gradle-build.log
@@ -84,7 +84,7 @@ jobs:
 
       - name: Upload verification reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lumina-verification-reports
           path: |
