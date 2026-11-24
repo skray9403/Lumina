@@ -3,9 +3,11 @@ package org.fossify.gallery.ui.navigation
 import android.content.Context
 import android.content.Intent
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -20,11 +22,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -55,6 +57,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,16 +68,30 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.lerp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import org.fossify.gallery.engine.share.QuickShareTarget
 import org.fossify.gallery.engine.share.RecentShareStore
 import org.fossify.gallery.models.Medium
@@ -85,6 +102,8 @@ import org.fossify.gallery.ui.theme.rememberLuminaDarkColorScheme
 import org.fossify.gallery.ui.theme.rememberLuminaPillTokens
 import kotlin.math.abs
 import kotlin.math.roundToInt
+
+private val ExpressiveSpatialEasing = CubicBezierEasing(0.2f, 0.0f, 0.0f, 1.0f)
 
 @Immutable
 sealed interface DockMode {
@@ -116,17 +135,6 @@ sealed interface DockMode {
     ) : DockMode
 }
 
-private enum class UtilityPillAction {
-    SEARCH,
-    SCROLL_TOP
-}
-
-/**
- * Persistent floating bottom dock.
- * - Shadow-safe layout (never clips shadowed Surfaces).
- * - Search expands in-place across the full bottom bar and rises with imePadding().
- * - Viewer mode uses decluttered [Edit | + Add to | Delete] + detached Smart Share FAB.
- */
 @Composable
 fun LuminaBottomDock(
     mode: DockMode,
@@ -152,11 +160,21 @@ fun LuminaBottomDock(
         label = "dock_visibility_slide"
     )
 
+    val searchProgress by animateFloatAsState(
+        targetValue = if (isSearchExpanded) 1f else 0f,
+        animationSpec = tween(durationMillis = 220, easing = ExpressiveSpatialEasing),
+        label = "dock_search_morph"
+    )
+
     val containerColor by animateColorAsState(
         targetValue = pillTokens.containerColor,
         animationSpec = LuminaMotion.colorTransition,
         label = "dock_container_color"
     )
+
+    val barHeightPx = with(density) { 54.dp.roundToPx() }
+    val slotGapPx = with(density) { 10.dp.roundToPx() }
+    val hasTrailingSlot = mode is DockMode.Home || mode is DockMode.Viewer
 
     Box(
         modifier = modifier
@@ -170,29 +188,11 @@ fun LuminaBottomDock(
             },
         contentAlignment = Alignment.BottomCenter
     ) {
-        if (isSearchExpanded && homeMode != null) {
-            // Expanded bottom search pill occupying the entire bottom dock width
-            BottomSearchBarPill(
-                query = homeMode.searchQuery,
-                placeholder = if (homeMode.activeAlbumName != null) {
-                    "Search in ${homeMode.activeAlbumName}..."
-                } else {
-                    "Search photos, videos, albums..."
-                },
-                containerColor = containerColor,
-                contentColor = pillTokens.contentColor,
-                secondaryColor = pillTokens.secondaryContentColor,
-                border = pillTokens.border,
-                shadowElevation = pillTokens.shadowElevation,
-                onQueryChange = homeMode.onSearchQueryChange,
-                onClose = homeMode.onSearchClose
-            )
-        } else {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Primary morphing capsule (animateContentSize lives INSIDE Surface to avoid clipping shadow)
+        // Custom 2-slot morphing Layout: Search circle expands smoothly across full width while left pill fades/shrinks
+        Layout(
+            modifier = Modifier.fillMaxWidth(),
+            content = {
+                // Child 0: Primary morphing capsule
                 Surface(
                     shape = RoundedCornerShape(32.dp),
                     color = containerColor,
@@ -200,71 +200,67 @@ fun LuminaBottomDock(
                     shadowElevation = pillTokens.shadowElevation,
                     modifier = Modifier.height(54.dp)
                 ) {
-                    Box(
-                        modifier = Modifier.animateContentSize(animationSpec = LuminaMotion.dockSizeSpec),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        AnimatedContent(
-                            targetState = mode,
-                            contentKey = { it::class },
-                            transitionSpec = {
-                                fadeIn(LuminaMotion.throughZeroEnter) togetherWith
-                                    fadeOut(LuminaMotion.throughZeroExit)
-                            },
-                            label = "dock_mode_morph"
-                        ) { targetMode ->
-                            when (targetMode) {
-                                is DockMode.Home -> HomeDockContent(
-                                    currentTab = targetMode.currentTab,
-                                    isCollapsed = targetMode.isCollapsed,
-                                    onTabSelect = targetMode.onTabSelect
-                                )
+                    AnimatedContent(
+                        targetState = mode,
+                        contentKey = { it::class },
+                        transitionSpec = {
+                            (fadeIn(LuminaMotion.throughZeroEnter) togetherWith
+                                fadeOut(LuminaMotion.throughZeroExit))
+                                .using(SizeTransform(clip = false) { _, _ -> LuminaMotion.dockSizeSpec })
+                        },
+                        contentAlignment = Alignment.Center,
+                        label = "dock_mode_morph"
+                    ) { targetMode ->
+                        when (targetMode) {
+                            is DockMode.Home -> HomeDockContent(
+                                currentTab = targetMode.currentTab,
+                                isCollapsed = targetMode.isCollapsed,
+                                onTabSelect = targetMode.onTabSelect
+                            )
 
-                                is DockMode.Selection -> SelectionDockContent(
-                                    onShare = targetMode.onShare,
-                                    onAddToAlbum = targetMode.onAddToAlbum,
-                                    onDelete = targetMode.onDelete
-                                )
+                            is DockMode.Selection -> SelectionDockContent(
+                                onShare = targetMode.onShare,
+                                onAddToAlbum = targetMode.onAddToAlbum,
+                                onDelete = targetMode.onDelete
+                            )
 
-                                is DockMode.Viewer -> ViewerDockContent(
-                                    medium = targetMode.medium,
-                                    onSurfaceTint = darkDynamicScheme.onSurface,
-                                    deleteTint = darkDynamicScheme.error,
-                                    onAddToAlbumClick = targetMode.onAddToAlbumClick,
-                                    onDeleteClick = targetMode.onDeleteClick,
-                                    context = context
-                                )
-                            }
+                            is DockMode.Viewer -> ViewerDockContent(
+                                medium = targetMode.medium,
+                                onSurfaceTint = darkDynamicScheme.onSurface,
+                                deleteTint = darkDynamicScheme.error,
+                                onAddToAlbumClick = targetMode.onAddToAlbumClick,
+                                onDeleteClick = targetMode.onDeleteClick,
+                                context = context
+                            )
                         }
                     }
                 }
 
-                // Trailing detached circular FAB slot (Search/ScrollTop in Home, Smart Share FAB in Viewer)
-                when (mode) {
-                    is DockMode.Home -> {
-                        val action = if (mode.showScrollToTop) {
-                            UtilityPillAction.SCROLL_TOP
-                        } else {
-                            UtilityPillAction.SEARCH
-                        }
-                        DetachedUtilityFab(
-                            action = action,
+                // Child 1: Trailing slot (Morphing Search/ScrollTop in Home; Popup-anchored Smart Share FAB in Viewer)
+                if (hasTrailingSlot) {
+                    when (mode) {
+                        is DockMode.Home -> MorphingSearchOrFab(
+                            searchProgress = searchProgress,
+                            isSearchActive = mode.isSearchActive,
+                            showScrollToTop = mode.showScrollToTop,
+                            query = mode.searchQuery,
+                            placeholder = if (mode.activeAlbumName != null) {
+                                "Search in ${mode.activeAlbumName}..."
+                            } else {
+                                "Search photos, videos, albums..."
+                            },
                             containerColor = containerColor,
                             contentColor = pillTokens.contentColor,
+                            secondaryColor = pillTokens.secondaryContentColor,
                             border = pillTokens.border,
                             shadowElevation = pillTokens.shadowElevation,
-                            onClick = {
-                                if (action == UtilityPillAction.SCROLL_TOP) {
-                                    mode.onScrollToTop()
-                                } else {
-                                    mode.onSearchOpen()
-                                }
-                            }
+                            onSearchOpen = mode.onSearchOpen,
+                            onSearchClose = mode.onSearchClose,
+                            onQueryChange = mode.onSearchQueryChange,
+                            onScrollToTop = mode.onScrollToTop
                         )
-                    }
 
-                    is DockMode.Viewer -> {
-                        SmartShareFab(
+                        is DockMode.Viewer -> SmartShareFab(
                             medium = mode.medium,
                             containerColor = darkDynamicScheme.primaryContainer,
                             contentColor = darkDynamicScheme.onPrimaryContainer,
@@ -273,189 +269,264 @@ fun LuminaBottomDock(
                             border = pillTokens.border,
                             shadowElevation = pillTokens.shadowElevation
                         )
-                    }
 
-                    is DockMode.Selection -> Unit
+                        is DockMode.Selection -> Unit
+                    }
                 }
             }
-        }
-    }
-}
+        ) { measurables, constraints ->
+            val maxW = constraints.maxWidth
+            val primaryMeasurable = measurables[0]
+            val trailingMeasurable = measurables.getOrNull(1)
 
-@Composable
-private fun BottomSearchBarPill(
-    query: String,
-    placeholder: String,
-    containerColor: Color,
-    contentColor: Color,
-    secondaryColor: Color,
-    border: BorderStroke,
-    shadowElevation: androidx.compose.ui.unit.Dp,
-    onQueryChange: (String) -> Unit,
-    onClose: () -> Unit
-) {
-    val focusManager = LocalFocusManager.current
-    val focusRequester = remember { FocusRequester() }
-
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-    }
-
-    Surface(
-        shape = RoundedCornerShape(28.dp),
-        color = containerColor,
-        border = border,
-        shadowElevation = shadowElevation,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(54.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Search,
-                contentDescription = "Search",
-                tint = secondaryColor,
-                modifier = Modifier.size(20.dp)
+            val primaryPlaceable = primaryMeasurable.measure(
+                Constraints(minWidth = 0, maxWidth = maxW, minHeight = barHeightPx, maxHeight = barHeightPx)
             )
 
-            Box(
-                modifier = Modifier.weight(1f),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                if (query.isEmpty()) {
-                    Text(
-                        text = placeholder,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = secondaryColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+            val trailingPlaceable = trailingMeasurable?.let { m ->
+                val targetW = lerp(barHeightPx.toFloat(), maxW.toFloat(), searchProgress)
+                    .roundToInt()
+                    .coerceIn(barHeightPx, maxW)
+                m.measure(Constraints.fixed(targetW, barHeightPx))
+            }
+
+            val totalRestW = if (trailingPlaceable != null) {
+                primaryPlaceable.width + slotGapPx + barHeightPx
+            } else {
+                primaryPlaceable.width
+            }
+            val primaryRestX = ((maxW - totalRestW) / 2).coerceAtLeast(0)
+            val trailingRestX = primaryRestX + primaryPlaceable.width + slotGapPx
+
+            layout(maxW, barHeightPx) {
+                if (searchProgress < 0.98f) {
+                    primaryPlaceable.placeWithLayer(primaryRestX, 0) {
+                        val s = lerp(1f, 0.88f, searchProgress)
+                        scaleX = s
+                        scaleY = s
+                        alpha = (1f - searchProgress * 2.2f).coerceIn(0f, 1f)
+                        translationX = -searchProgress * slotGapPx * 2f
+                    }
                 }
-                BasicTextField(
-                    value = query,
-                    onValueChange = onQueryChange,
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = contentColor),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .focusRequester(focusRequester)
-                )
-            }
-
-            val closeInteraction = remember { MutableInteractionSource() }
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .pressScale(closeInteraction, pressedScale = 0.88f)
-                    .clip(CircleShape)
-                    .clickable(
-                        interactionSource = closeInteraction,
-                        indication = ripple(bounded = true),
-                        role = Role.Button,
-                        onClick = {
-                            if (query.isNotEmpty()) {
-                                onQueryChange("")
-                            } else {
-                                focusManager.clearFocus()
-                                onClose()
-                            }
-                        }
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = if (query.isNotEmpty()) "Clear query" else "Close search",
-                    tint = secondaryColor,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DetachedUtilityFab(
-    action: UtilityPillAction,
-    containerColor: Color,
-    contentColor: Color,
-    border: BorderStroke,
-    shadowElevation: androidx.compose.ui.unit.Dp,
-    onClick: () -> Unit
-) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isScrollTop = action == UtilityPillAction.SCROLL_TOP
-    val bg by animateColorAsState(
-        targetValue = if (isScrollTop) MaterialTheme.colorScheme.primaryContainer else containerColor,
-        animationSpec = LuminaMotion.colorTransition,
-        label = "utility_fab_bg"
-    )
-    val tint by animateColorAsState(
-        targetValue = if (isScrollTop) MaterialTheme.colorScheme.onPrimaryContainer else contentColor,
-        animationSpec = LuminaMotion.colorTransition,
-        label = "utility_fab_tint"
-    )
-
-    Surface(
-        shape = CircleShape,
-        color = bg,
-        border = border,
-        shadowElevation = shadowElevation,
-        modifier = Modifier
-            .size(54.dp)
-            .pressScale(interactionSource, pressedScale = 0.88f)
-    ) {
-        Box(
-            modifier = Modifier
-                .clip(CircleShape)
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = ripple(bounded = true),
-                    role = Role.Button,
-                    onClick = onClick
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            AnimatedContent(
-                targetState = action,
-                transitionSpec = {
-                    fadeIn(LuminaMotion.throughZeroEnter) togetherWith
-                        fadeOut(LuminaMotion.throughZeroExit)
-                },
-                label = "utility_fab_icon"
-            ) { target ->
-                Icon(
-                    imageVector = if (target == UtilityPillAction.SCROLL_TOP) {
-                        Icons.Default.KeyboardArrowUp
-                    } else {
-                        Icons.Default.Search
-                    },
-                    contentDescription = if (target == UtilityPillAction.SCROLL_TOP) {
-                        "Scroll to top"
-                    } else {
-                        "Search"
-                    },
-                    tint = tint,
-                    modifier = Modifier.size(22.dp)
-                )
+                if (trailingPlaceable != null) {
+                    val trailingX = lerp(trailingRestX.toFloat(), 0f, searchProgress).roundToInt()
+                    trailingPlaceable.placeRelative(trailingX, 0)
+                }
             }
         }
     }
 }
 
 /**
- * Viewer Share FAB:
- * - Normal tap: Native Android Sharesheet (updates recent apps via ShareTargetReceiver).
- * - Swipe up: Floating vertical stack of recently shared apps; drag-release or tap to share directly.
+ * Single Surface that smoothly expands from a 54dp circular Search/ScrollTop button into
+ * a full-width bottom Search field. Uses local synchronous TextFieldValue so async ViewModel
+ * filtering never resets cursor position to index 0.
+ */
+@Composable
+private fun MorphingSearchOrFab(
+    searchProgress: Float,
+    isSearchActive: Boolean,
+    showScrollToTop: Boolean,
+    query: String,
+    placeholder: String,
+    containerColor: Color,
+    contentColor: Color,
+    secondaryColor: Color,
+    border: BorderStroke,
+    shadowElevation: Dp,
+    onSearchOpen: () -> Unit,
+    onSearchClose: () -> Unit,
+    onQueryChange: (String) -> Unit,
+    onScrollToTop: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val focusManager = LocalFocusManager.current
+    val focusRequester = remember { FocusRequester() }
+
+    // Local synchronous TextFieldValue eliminates cursor-jump-to-left during async filtering
+    var textFieldValue by remember {
+        mutableStateOf(TextFieldValue(text = query, selection = TextRange(query.length)))
+    }
+
+    LaunchedEffect(query) {
+        if (query.isEmpty() && textFieldValue.text.isNotEmpty()) {
+            textFieldValue = TextFieldValue(text = "", selection = TextRange.Zero)
+        }
+    }
+
+    LaunchedEffect(isSearchActive) {
+        if (isSearchActive) {
+            textFieldValue = TextFieldValue(text = query, selection = TextRange(query.length))
+            focusRequester.requestFocus()
+        } else {
+            focusManager.clearFocus()
+        }
+    }
+
+    val isAccentScrollTop = showScrollToTop && !isSearchActive && searchProgress < 0.1f
+    val bg by animateColorAsState(
+        targetValue = if (isAccentScrollTop) MaterialTheme.colorScheme.primaryContainer else containerColor,
+        animationSpec = LuminaMotion.colorTransition,
+        label = "search_fab_bg"
+    )
+    val iconTint by animateColorAsState(
+        targetValue = if (isAccentScrollTop) MaterialTheme.colorScheme.onPrimaryContainer else contentColor,
+        animationSpec = LuminaMotion.colorTransition,
+        label = "search_fab_tint"
+    )
+
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = bg,
+        border = border,
+        shadowElevation = shadowElevation,
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (!isSearchActive && searchProgress < 0.2f) {
+                    Modifier.pressScale(interactionSource, pressedScale = 0.88f)
+                } else {
+                    Modifier
+                }
+            )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(28.dp))
+                .then(
+                    if (!isSearchActive) {
+                        Modifier.clickable(
+                            interactionSource = interactionSource,
+                            indication = ripple(bounded = true),
+                            role = Role.Button,
+                            onClick = {
+                                if (showScrollToTop) onScrollToTop() else onSearchOpen()
+                            }
+                        )
+                    } else {
+                        Modifier
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            // Collapsed circular FAB icon (fades out cleanly as width expands)
+            val fabAlpha = (1f - searchProgress * 3.2f).coerceIn(0f, 1f)
+            if (fabAlpha > 0.01f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = fabAlpha },
+                    contentAlignment = Alignment.Center
+                ) {
+                    AnimatedContent(
+                        targetState = showScrollToTop,
+                        transitionSpec = {
+                            fadeIn(LuminaMotion.throughZeroEnter) togetherWith
+                                fadeOut(LuminaMotion.throughZeroExit)
+                        },
+                        label = "fab_icon_swap"
+                    ) { scrollTop ->
+                        Icon(
+                            imageVector = if (scrollTop) Icons.Default.KeyboardArrowUp else Icons.Default.Search,
+                            contentDescription = if (scrollTop) "Scroll to top" else "Search",
+                            tint = iconTint,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+            }
+
+            // Expanded Search Row (fades in smoothly as capsule opens to full width)
+            val fieldAlpha = ((searchProgress - 0.28f) / 0.72f).coerceIn(0f, 1f)
+            if (fieldAlpha > 0.01f) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = fieldAlpha }
+                        .padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Search",
+                        tint = secondaryColor,
+                        modifier = Modifier.size(20.dp)
+                    )
+
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        if (textFieldValue.text.isEmpty()) {
+                            Text(
+                                text = placeholder,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = secondaryColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        BasicTextField(
+                            value = textFieldValue,
+                            onValueChange = { updated ->
+                                textFieldValue = updated
+                                onQueryChange(updated.text)
+                            },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = contentColor),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(focusRequester)
+                        )
+                    }
+
+                    val closeInteraction = remember { MutableInteractionSource() }
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .pressScale(closeInteraction, pressedScale = 0.88f)
+                            .clip(CircleShape)
+                            .clickable(
+                                interactionSource = closeInteraction,
+                                indication = ripple(bounded = true),
+                                role = Role.Button,
+                                onClick = {
+                                    if (textFieldValue.text.isNotEmpty()) {
+                                        textFieldValue = TextFieldValue("", TextRange.Zero)
+                                        onQueryChange("")
+                                    } else {
+                                        focusManager.clearFocus()
+                                        onSearchClose()
+                                    }
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = if (textFieldValue.text.isNotEmpty()) "Clear" else "Close search",
+                            tint = secondaryColor,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Viewer Smart Share FAB:
+ * - Always occupies strictly 54dp x 54dp inside the dock Row (Popup floats independently above it,
+ *   so the bottom bar NEVER moves vertically).
+ * - Tap: opens native Android Sharesheet.
+ * - Single-motion press + drag up + lift: opens recent-apps stack directly above FAB, highlights
+ *   the app under the finger with haptic feedback, and fires direct share on finger release.
  */
 @Composable
 private fun SmartShareFab(
@@ -465,81 +536,119 @@ private fun SmartShareFab(
     popupContainerColor: Color,
     popupContentColor: Color,
     border: BorderStroke,
-    shadowElevation: androidx.compose.ui.unit.Dp
+    shadowElevation: Dp
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
 
     var recentTargets by remember { mutableStateOf<List<QuickShareTarget>>(emptyList()) }
+    val latestTargets by rememberUpdatedState(recentTargets)
+    val latestMedium by rememberUpdatedState(medium)
+
     var isQuickMenuOpen by remember { mutableStateOf(false) }
     var hoveredIndex by remember { mutableIntStateOf(-1) }
 
-    LaunchedEffect(medium.mimeType, isQuickMenuOpen) {
+    // Load only per MIME type (never keyed on isQuickMenuOpen so pointerInput is never cancelled mid-drag)
+    LaunchedEffect(medium.mimeType) {
         recentTargets = RecentShareStore.loadRecentTargets(context, medium.mimeType)
     }
 
-    // Reset quick menu on page swipe
     LaunchedEffect(medium.id) {
         isQuickMenuOpen = false
         hoveredIndex = -1
     }
 
-    val itemStepPx = with(density) { 48.dp.toPx() }
-    val swipeTriggerPx = with(density) { 26.dp.toPx() }
+    val popupGapPx = with(density) { 10.dp.roundToPx() }
+    val popupPadPx = with(density) { 6.dp.toPx() }
+    val itemStridePx = with(density) { 48.dp.toPx() }
+    val dragOpenThresholdPx = with(density) { 14.dp.toPx() }
+    val maxHorizontalDriftPx = with(density) { 96.dp.toPx() }
 
-    Box(contentAlignment = Alignment.BottomCenter) {
-        // Floating recent-apps vertical stack above Share FAB
+    val popupPositionProvider = remember(popupGapPx) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize
+            ): IntOffset {
+                // Align popup right edge with FAB right edge so label pills expand cleanly to the left
+                val x = (anchorBounds.right - popupContentSize.width)
+                    .coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+                val y = (anchorBounds.top - popupContentSize.height - popupGapPx).coerceAtLeast(0)
+                return IntOffset(x, y)
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier.size(54.dp),
+        contentAlignment = Alignment.Center
+    ) {
         if (isQuickMenuOpen && recentTargets.isNotEmpty()) {
-            val popupBottomOffsetPx = with(density) { 64.dp.roundToPx() }
-            Surface(
-                shape = RoundedCornerShape(28.dp),
-                color = popupContainerColor,
-                border = border,
-                shadowElevation = shadowElevation,
-                modifier = Modifier
-                    .offset { IntOffset(0, -popupBottomOffsetPx) }
+            Popup(
+                popupPositionProvider = popupPositionProvider,
+                properties = PopupProperties(focusable = false, clippingEnabled = false)
             ) {
                 Column(
-                    modifier = Modifier.padding(vertical = 6.dp, horizontal = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    horizontalAlignment = Alignment.End
                 ) {
-                    // Display top-to-bottom so index 0 (most recent) sits closest to the thumb
+                    // Render top-to-bottom so index 0 (most recent) sits closest to the FAB / thumb
                     recentTargets.asReversed().forEachIndexed { visualIdx, target ->
                         val logicalIdx = recentTargets.lastIndex - visualIdx
                         val isHovered = logicalIdx == hoveredIndex
                         val itemScale by animateFloatAsState(
                             targetValue = if (isHovered) 1.18f else 1f,
                             animationSpec = LuminaMotion.responsiveSpring(),
-                            label = "quick_share_scale"
+                            label = "quick_share_scale_$logicalIdx"
                         )
-                        Box(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .graphicsLayer {
-                                    scaleX = itemScale
-                                    scaleY = itemScale
-                                }
-                                .clip(CircleShape)
-                                .background(
-                                    if (isHovered) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                                    else Color.Transparent
-                                )
-                                .clickable(role = Role.Button) {
-                                    isQuickMenuOpen = false
-                                    hoveredIndex = -1
-                                    RecentShareStore.shareDirectlyTo(context, medium, target)
-                                },
-                            contentAlignment = Alignment.Center
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Image(
-                                bitmap = target.icon,
-                                contentDescription = target.label,
+                            if (isHovered) {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = popupContainerColor,
+                                    border = border,
+                                    shadowElevation = 4.dp
+                                ) {
+                                    Text(
+                                        text = target.label,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = popupContentColor,
+                                        maxLines = 1,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                shape = CircleShape,
+                                color = if (isHovered) containerColor else popupContainerColor,
+                                border = border,
+                                shadowElevation = shadowElevation,
                                 modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(CircleShape)
-                            )
+                                    .size(46.dp)
+                                    .graphicsLayer {
+                                        scaleX = itemScale
+                                        scaleY = itemScale
+                                    }
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Image(
+                                        bitmap = target.icon,
+                                        contentDescription = target.label,
+                                        modifier = Modifier
+                                            .size(30.dp)
+                                            .clip(CircleShape)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -554,58 +663,74 @@ private fun SmartShareFab(
             modifier = Modifier
                 .size(54.dp)
                 .pressScale(interactionSource, pressedScale = 0.88f)
-                .pointerInput(medium.id, recentTargets) {
+                .pointerInput(medium.id) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val startY = down.position.y
-                        var swipedUp = false
+                        var dragMenuActive = false
                         var movedPastSlop = false
+                        var lastHovered = -1
 
                         do {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull() ?: break
-                            val dy = change.position.y - startY
+                            val dyFromDown = change.position.y - startY
 
-                            if (abs(dy) > viewConfiguration.touchSlop) {
+                            if (abs(dyFromDown) > viewConfiguration.touchSlop) {
                                 movedPastSlop = true
                             }
 
-                            if (dy < -swipeTriggerPx && recentTargets.isNotEmpty()) {
-                                if (!swipedUp) {
-                                    swipedUp = true
-                                    isQuickMenuOpen = true
+                            val targets = latestTargets
+                            if (!dragMenuActive && dyFromDown < -dragOpenThresholdPx && targets.isNotEmpty()) {
+                                dragMenuActive = true
+                                isQuickMenuOpen = true
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
+
+                            if (dragMenuActive) {
+                                change.consume()
+                                val yAboveFabTop = -change.position.y
+                                val dxFromFabCenter = abs(change.position.x - size.width / 2f)
+                                val distIntoStack = yAboveFabTop - popupGapPx - popupPadPx
+                                val nextHover = if (
+                                    dxFromFabCenter <= maxHorizontalDriftPx &&
+                                    distIntoStack >= -itemStridePx * 0.25f &&
+                                    distIntoStack <= targets.size * itemStridePx + itemStridePx * 0.35f
+                                ) {
+                                    (distIntoStack.coerceAtLeast(0f) / itemStridePx)
+                                        .toInt()
+                                        .coerceIn(0, targets.lastIndex)
+                                } else {
+                                    -1
                                 }
-                                val liftAboveFab = (-dy - swipeTriggerPx).coerceAtLeast(0f)
-                                val idx = (liftAboveFab / itemStepPx).toInt()
-                                hoveredIndex = if (idx in recentTargets.indices) idx else -1
-                                change.consume()
-                            } else if (swipedUp) {
-                                hoveredIndex = -1
-                                change.consume()
+
+                                if (nextHover != lastHovered) {
+                                    lastHovered = nextHover
+                                    hoveredIndex = nextHover
+                                    if (nextHover != -1) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    }
+                                }
                             }
                         } while (event.changes.any { it.pressed })
 
-                        if (swipedUp) {
-                            val chosen = recentTargets.getOrNull(hoveredIndex)
+                        if (dragMenuActive) {
+                            val chosen = latestTargets.getOrNull(lastHovered)
+                            isQuickMenuOpen = false
                             hoveredIndex = -1
                             if (chosen != null) {
-                                isQuickMenuOpen = false
-                                RecentShareStore.shareDirectlyTo(context, medium, chosen)
+                                RecentShareStore.shareDirectlyTo(context, latestMedium, chosen)
                             }
                         } else if (!movedPastSlop) {
-                            if (isQuickMenuOpen) {
-                                isQuickMenuOpen = false
-                            } else {
-                                RecentShareStore.launchNativeShareSheet(context, medium)
-                            }
+                            RecentShareStore.launchNativeShareSheet(context, latestMedium)
                         }
                     }
                 }
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
-                    imageVector = if (isQuickMenuOpen) Icons.Default.Close else Icons.Default.Share,
-                    contentDescription = "Share (swipe up for recent apps)",
+                    imageVector = Icons.Default.Share,
+                    contentDescription = "Share (drag up for recent apps)",
                     tint = contentColor,
                     modifier = Modifier.size(22.dp)
                 )
@@ -614,48 +739,92 @@ private fun SmartShareFab(
     }
 }
 
+/**
+ * Unified expressive tab strip with a single sliding active indicator pill and continuous
+ * float-driven label collapse (zero clipping of sibling tabs).
+ */
 @Composable
 private fun HomeDockContent(
     currentTab: GalleryTab,
     isCollapsed: Boolean,
     onTabSelect: (GalleryTab) -> Unit
 ) {
-    Row(
+    val density = LocalDensity.current
+    val collapseProgress by animateFloatAsState(
+        targetValue = if (isCollapsed) 1f else 0f,
+        animationSpec = tween(durationMillis = 200, easing = ExpressiveSpatialEasing),
+        label = "dock_collapse_progress"
+    )
+    val selectedPosition by animateFloatAsState(
+        targetValue = if (currentTab == GalleryTab.PHOTOS) 0f else 1f,
+        animationSpec = tween(durationMillis = 200, easing = ExpressiveSpatialEasing),
+        label = "dock_indicator_slide"
+    )
+
+    val padPx = with(density) { 5.dp.roundToPx() }
+    val gapPx = with(density) { 4.dp.roundToPx() }
+    val pillHeightPx = with(density) { 44.dp.roundToPx() }
+
+    Layout(
         modifier = Modifier.padding(horizontal = 5.dp, vertical = 5.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        DockTabPill(
-            title = "Photos",
-            icon = Icons.Default.PhotoSizeSelectActual,
-            isSelected = currentTab == GalleryTab.PHOTOS,
-            isCollapsed = isCollapsed,
-            onClick = { onTabSelect(GalleryTab.PHOTOS) }
+        content = {
+            // Child 0: Single sliding active indicator pill behind both tabs
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+            )
+            // Child 1: Photos tab
+            SlidingDockTab(
+                title = "Photos",
+                icon = Icons.Default.PhotoSizeSelectActual,
+                isSelected = currentTab == GalleryTab.PHOTOS,
+                collapseProgress = collapseProgress,
+                onClick = { onTabSelect(GalleryTab.PHOTOS) }
+            )
+            // Child 2: Albums tab
+            SlidingDockTab(
+                title = "Albums",
+                icon = Icons.Default.PhotoLibrary,
+                isSelected = currentTab == GalleryTab.ALBUMS,
+                collapseProgress = collapseProgress,
+                onClick = { onTabSelect(GalleryTab.ALBUMS) }
+            )
+        }
+    ) { measurables, constraints ->
+        val tabConstraints = Constraints(
+            minWidth = 0,
+            maxWidth = constraints.maxWidth,
+            minHeight = pillHeightPx,
+            maxHeight = pillHeightPx
         )
-        DockTabPill(
-            title = "Albums",
-            icon = Icons.Default.PhotoLibrary,
-            isSelected = currentTab == GalleryTab.ALBUMS,
-            isCollapsed = isCollapsed,
-            onClick = { onTabSelect(GalleryTab.ALBUMS) }
-        )
+        val tab0 = measurables[1].measure(tabConstraints)
+        val tab1 = measurables[2].measure(tabConstraints)
+
+        val indW = lerp(tab0.width.toFloat(), tab1.width.toFloat(), selectedPosition)
+            .roundToInt()
+            .coerceAtLeast(1)
+        val indX = lerp(0f, (tab0.width + gapPx).toFloat(), selectedPosition).roundToInt()
+        val indicator = measurables[0].measure(Constraints.fixed(indW, pillHeightPx))
+
+        val totalW = tab0.width + gapPx + tab1.width
+        layout(totalW, pillHeightPx) {
+            indicator.placeRelative(indX, 0)
+            tab0.placeRelative(0, 0)
+            tab1.placeRelative(tab0.width + gapPx, 0)
+        }
     }
 }
 
 @Composable
-private fun DockTabPill(
+private fun SlidingDockTab(
     title: String,
     icon: ImageVector,
     isSelected: Boolean,
-    isCollapsed: Boolean,
+    collapseProgress: Float,
     onClick: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    val bg by animateColorAsState(
-        targetValue = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-        animationSpec = LuminaMotion.colorTransition,
-        label = "pill_bg"
-    )
     val contentColor by animateColorAsState(
         targetValue = if (isSelected) {
             MaterialTheme.colorScheme.onPrimaryContainer
@@ -663,24 +832,25 @@ private fun DockTabPill(
             MaterialTheme.colorScheme.onSurfaceVariant
         },
         animationSpec = LuminaMotion.colorTransition,
-        label = "pill_content"
+        label = "tab_content_color"
     )
+
+    val horizontalPad = lerp(16f, 13f, collapseProgress).dp
+    val iconTextGap = (7f * (1f - collapseProgress)).dp
 
     Row(
         modifier = Modifier
             .height(44.dp)
             .pressScale(interactionSource)
-            .clip(RoundedCornerShape(26.dp))
-            .background(bg)
+            .clip(RoundedCornerShape(24.dp))
             .clickable(
                 interactionSource = interactionSource,
                 indication = ripple(bounded = true),
                 role = Role.Tab,
                 onClick = onClick
             )
-            .padding(horizontal = if (isCollapsed) 14.dp else 18.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(if (isCollapsed) 0.dp else 8.dp)
+            .padding(horizontal = horizontalPad),
+        verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             imageVector = icon,
@@ -688,13 +858,28 @@ private fun DockTabPill(
             tint = contentColor,
             modifier = Modifier.size(20.dp)
         )
-        if (!isCollapsed) {
-            Text(
-                text = title,
-                color = contentColor,
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1
-            )
+
+        // Smooth width + alpha label collapse without clipping sibling tabs
+        Layout(
+            modifier = Modifier.padding(start = iconTextGap),
+            content = {
+                Text(
+                    text = title,
+                    color = contentColor,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+        ) { measurables, constraints ->
+            val p = measurables[0].measure(constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity))
+            val currentW = (p.width * (1f - collapseProgress)).roundToInt().coerceAtLeast(0)
+            layout(currentW, p.height) {
+                val labelAlpha = (1f - collapseProgress * 1.8f).coerceIn(0f, 1f)
+                if (labelAlpha > 0.01f) {
+                    p.placeWithLayer(0, 0) { alpha = labelAlpha }
+                }
+            }
         }
     }
 }

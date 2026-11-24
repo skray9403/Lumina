@@ -55,7 +55,6 @@ Lumina/
 │   │   │   │               │   │   ├── GalleryViewModel.kt
 │   │   │   │               │   │   ├── LuminaHomeScreen.kt
 │   │   │   │               │   │   ├── MediaTimelineGrid.kt
-│   │   │   │               │   │   ├── SearchBarOverlay.kt
 │   │   │   │               │   │   └── SelectionTopBar.kt
 │   │   │   │               │   ├── navigation
 │   │   │   │               │   │   ├── DockScrollConnection.kt
@@ -484,10 +483,9 @@ Lumina/
 ### 6. Home Screen & Timeline Feed
 - **`app/src/main/kotlin/org/fossify/gallery/ui/home/LuminaHomeScreen.kt`**: Main feed container. Manages full-bleed feed, fixed-height floating top chrome, runtime API 33+ permissions, back gestures, and scoped MediaStore intent launchers.
 - **`app/src/main/kotlin/org/fossify/gallery/ui/home/AlbumDetailOverlay.kt`**: Stacked Album overlay mounted above AlbumsGrid with quick scale+slide entry and native API 33+ PredictiveBackHandler revealing AlbumsGrid underneath.
-- **`app/src/main/kotlin/org/fossify/gallery/ui/home/FloatingTopChrome.kt`**: Centered floating dark date pill (e.g., Sun, 1 Nov) with zero-churn derivedStateOf lookup, right-aligned circular overflow pill, optional left album back-chip, and clean in-place swaps to SearchBarOverlay or SelectionTopBar.
+- **`app/src/main/kotlin/org/fossify/gallery/ui/home/FloatingTopChrome.kt`**: Centered floating dark date pill (e.g., Sun, 1 Nov) with zero-churn derivedStateOf lookup, right-aligned circular overflow pill, optional left album back-chip, and clean in-place swaps to SelectionTopBar.
 - **`app/src/main/kotlin/org/fossify/gallery/ui/home/MediaTimelineGrid.kt`**: Grouped date headers, multi-column `LazyVerticalGrid` (2–5 columns), 2dp tight spacing, draw-phase selection insets (0.86f scale + 14dp corner rounding), and `sharedBounds` transitions.
 - **`app/src/main/kotlin/org/fossify/gallery/ui/home/AlbumsGrid.kt`**: Two-column album folder grid with negative bucket ID proxying to avoid thumbnail cache collisions.
-- **`app/src/main/kotlin/org/fossify/gallery/ui/home/SearchBarOverlay.kt`**: 52dp floating search pill with clear action and inline album back-chip.
 - **`app/src/main/kotlin/org/fossify/gallery/ui/home/SelectionTopBar.kt`**: 52dp floating selection top bar showing count, Select All, and Close buttons.
 - **`app/src/main/kotlin/org/fossify/gallery/ui/home/GalleryViewModel.kt`**: `AndroidViewModel` owning library UI state, album filtering, search, selection, and MediaStore mutations.
 

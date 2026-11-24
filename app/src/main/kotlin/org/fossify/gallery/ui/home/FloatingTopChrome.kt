@@ -4,9 +4,14 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -16,10 +21,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -34,9 +40,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import org.fossify.gallery.ui.theme.LuminaMotion
 import org.fossify.gallery.ui.theme.LuminaPillTokens
@@ -114,7 +122,6 @@ private fun FloatingPillsRow(
             .fillMaxWidth()
             .height(48.dp)
     ) {
-        // Left: Back button when inside an album overlay
         if (onBackClick != null) {
             val backInteraction = remember { MutableInteractionSource() }
             Surface(
@@ -148,7 +155,6 @@ private fun FloatingPillsRow(
             }
         }
 
-        // Center: Sticky floating date pill (replaces all in-grid date headers)
         StickyCenterDatePill(
             gridState = gridState,
             indexToDatePill = indexToDatePill,
@@ -157,7 +163,6 @@ private fun FloatingPillsRow(
             modifier = Modifier.align(Alignment.Center)
         )
 
-        // Right: Trailing circular overflow pill (⋮)
         Box(modifier = Modifier.align(Alignment.CenterEnd)) {
             val menuInteraction = remember { MutableInteractionSource() }
             Surface(
@@ -191,30 +196,80 @@ private fun FloatingPillsRow(
 
             DropdownMenu(
                 expanded = menuExpanded,
-                onDismissRequest = { menuExpanded = false }
+                onDismissRequest = { menuExpanded = false },
+                offset = DpOffset(0.dp, 8.dp),
+                shape = RoundedCornerShape(22.dp),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 0.dp,
+                shadowElevation = 8.dp,
+                border = tokens.border
             ) {
-                for (cols in 2..5) {
-                    DropdownMenuItem(
-                        text = { Text("$cols columns") },
-                        trailingIcon = if (columnCount == cols) {
-                            {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Grid columns",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 2.dp)
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        for (cols in 2..5) {
+                            val selected = columnCount == cols
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (selected) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.7f)
+                                    )
+                                    .clickable(role = Role.RadioButton) {
+                                        menuExpanded = false
+                                        onColumnCountChange(cols)
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "$cols",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    }
                                 )
                             }
-                        } else {
-                            null
-                        },
-                        onClick = {
-                            menuExpanded = false
-                            onColumnCountChange(cols)
                         }
-                    )
+                    }
                 }
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                )
+
                 DropdownMenuItem(
-                    text = { Text("Refresh library") },
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp),
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = "Refresh library",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                    },
                     onClick = {
                         menuExpanded = false
                         onRefresh()

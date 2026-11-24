@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -37,19 +38,8 @@ import org.fossify.gallery.ui.viewer.AddToAlbumSheet
 import org.fossify.gallery.ui.viewer.LuminaViewer
 import org.fossify.gallery.ui.viewer.ViewerViewModel
 
-enum class LuminaTab {
-    PHOTOS,
-    ALBUMS,
-    SETTINGS
-}
+enum class LuminaTab { PHOTOS, ALBUMS, SETTINGS }
 
-/**
- * Root Lumina application shell.
- * - Keeps LuminaHomeScreen mounted behind LuminaViewer so scroll state is never lost
- *   and predictive-back / drag-to-dismiss reveal the live grid underneath.
- * - Mounts a single persistent morphing LuminaBottomDock across Home, Selection, and Viewer.
- * - Manages modal AddToAlbumSheet.
- */
 @Composable
 fun LuminaApp(
     pickerMode: Boolean = false,
@@ -81,29 +71,26 @@ fun LuminaApp(
     val albumTileBounds = remember { HashMap<Long, Rect>() }
 
     var isViewerOpen by remember { mutableStateOf(false) }
-    var isFromAlbumViewer by remember { mutableStateOf(false) }
+    var isViewerClosing by remember { mutableStateOf(false) }
+    var viewerOpenedFromAlbum by remember { mutableStateOf(false) }
     var viewerInitialIndex by remember { mutableIntStateOf(0) }
     var currentViewerPage by remember { mutableIntStateOf(0) }
     var viewerSourceRect by remember { mutableStateOf<Rect?>(null) }
     var hiddenGridMediaId by remember { mutableStateOf<Long?>(null) }
     var useUnfilteredViewerMedia by remember { mutableStateOf(false) }
-    var showAddToAlbumSheet by remember { mutableStateOf(false) }
+    var pendingAddToAlbumItems by remember { mutableStateOf<List<Medium>?>(null) }
 
-    LaunchedEffect(pickerMimeType) {
-        galleryViewModel.setPickerMimeType(pickerMimeType)
-    }
+    LaunchedEffect(pickerMimeType) { galleryViewModel.setPickerMimeType(pickerMimeType) }
 
     LaunchedEffect(initialTab, launchRevision) {
-        if (initialTab == LuminaTab.ALBUMS.name) {
-            galleryViewModel.setTab(GalleryTab.ALBUMS)
-        }
+        if (initialTab == LuminaTab.ALBUMS.name) galleryViewModel.setTab(GalleryTab.ALBUMS)
     }
 
-    val activeFeed = if (isFromAlbumViewer) galleryState.albumMedia else galleryState.visibleMedia
-    val viewerMedia = if (useUnfilteredViewerMedia || activeFeed.isEmpty()) {
-        galleryState.allMedia
-    } else {
-        activeFeed
+    val viewerMedia = when {
+        useUnfilteredViewerMedia -> galleryState.allMedia
+        viewerOpenedFromAlbum && galleryState.albumMedia.isNotEmpty() -> galleryState.albumMedia
+        galleryState.visibleMedia.isNotEmpty() -> galleryState.visibleMedia
+        else -> galleryState.allMedia
     }
 
     LaunchedEffect(initialUri, galleryState.allMedia, launchRevision) {
@@ -111,10 +98,11 @@ fun LuminaApp(
             val foundIdx = galleryState.allMedia.indexOfFirst { it.uri == initialUri }
             val resolved = if (foundIdx != -1) foundIdx else 0
             useUnfilteredViewerMedia = true
-            isFromAlbumViewer = false
+            viewerOpenedFromAlbum = false
             viewerSourceRect = null
             viewerInitialIndex = resolved
             currentViewerPage = resolved
+            isViewerClosing = false
             isViewerOpen = true
         }
     }
@@ -122,20 +110,26 @@ fun LuminaApp(
     LaunchedEffect(isViewerOpen, viewerMedia.isEmpty()) {
         if (isViewerOpen && viewerMedia.isEmpty()) {
             isViewerOpen = false
+            isViewerClosing = false
         }
     }
 
-    val safeViewerMedium = viewerMedia.getOrNull(currentViewerPage)
-        ?: viewerMedia.getOrNull(viewerInitialIndex)
-
-    val activeGridState = if (galleryState.activeAlbumId != null) albumGridState else photosGridState
-    val showScrollToTop by remember(activeGridState) {
-        derivedStateOf { activeGridState.firstVisibleItemIndex > 10 }
+    LaunchedEffect(isViewerOpen, galleryState.selectedTab, galleryState.activeAlbumId, galleryState.isMultiSelectMode) {
+        if (!isViewerOpen) dockScrollState.expand()
     }
 
-    LuminaTheme(themeMode = "SYSTEM", dynamicColor = true) {
+    val activeScrollGridState = if (galleryState.activeAlbumId != null) albumGridState else photosGridState
+    val showScrollToTop by remember(activeScrollGridState, galleryState.selectedTab, galleryState.activeAlbumId) {
+        derivedStateOf {
+            val isGridVisible = galleryState.activeAlbumId != null || galleryState.selectedTab == GalleryTab.PHOTOS
+            isGridVisible && activeScrollGridState.firstVisibleItemIndex >= 6
+        }
+    }
+
+    val safeViewerMedium = viewerMedia.getOrNull(currentViewerPage) ?: viewerMedia.firstOrNull()
+
+    LuminaTheme {
         Box(modifier = modifier.fillMaxSize()) {
-            // 1. Home screen feed
             LuminaHomeScreen(
                 viewModel = galleryViewModel,
                 photosGridState = photosGridState,
@@ -145,31 +139,6 @@ fun LuminaApp(
                 albumTileBounds = albumTileBounds,
                 hiddenMediaId = hiddenGridMediaId,
                 isViewerOpen = isViewerOpen,
-                onMediaClick = { medium, sourceRect, fromAlbum ->
-                    isFromAlbumViewer = fromAlbum
-                    if (pickerMode) {
-                        if (allowMultiple) {
-                            galleryViewModel.toggleSelection(medium.id)
-                        } else {
-                            onMediaPicked(listOf(medium.uri))
-                        }
-                    } else {
-                        val list = if (fromAlbum) galleryState.albumMedia else galleryState.visibleMedia
-                        val idx = list.indexOfFirst { it.id == medium.id }
-                        val resolved = if (idx != -1) {
-                            useUnfilteredViewerMedia = false
-                            idx
-                        } else {
-                            useUnfilteredViewerMedia = true
-                            galleryState.allMedia.indexOfFirst { it.id == medium.id }.coerceAtLeast(0)
-                        }
-                        viewerSourceRect = sourceRect
-                        viewerInitialIndex = resolved
-                        currentViewerPage = resolved
-                        viewerViewModel.setChromeVisible(true)
-                        isViewerOpen = true
-                    }
-                },
                 pickerMode = pickerMode,
                 allowMultiple = allowMultiple,
                 onConfirmPick = {
@@ -178,10 +147,33 @@ fun LuminaApp(
                         .map { it.uri }
                     onMediaPicked(picked)
                 },
+                onMediaClick = { medium, sourceRect, fromAlbum ->
+                    if (pickerMode) {
+                        if (allowMultiple) galleryViewModel.toggleSelection(medium.id)
+                        else onMediaPicked(listOf(medium.uri))
+                    } else {
+                        val feed = if (fromAlbum) galleryState.albumMedia else galleryState.visibleMedia
+                        val idx = feed.indexOfFirst { it.id == medium.id }
+                        val resolved = if (idx != -1) {
+                            useUnfilteredViewerMedia = false
+                            viewerOpenedFromAlbum = fromAlbum
+                            idx
+                        } else {
+                            useUnfilteredViewerMedia = true
+                            viewerOpenedFromAlbum = false
+                            galleryState.allMedia.indexOfFirst { it.id == medium.id }.coerceAtLeast(0)
+                        }
+                        viewerSourceRect = sourceRect
+                        viewerInitialIndex = resolved
+                        currentViewerPage = resolved
+                        isViewerClosing = false
+                        viewerViewModel.setChromeVisible(true)
+                        isViewerOpen = true
+                    }
+                },
                 modifier = Modifier.fillMaxSize()
             )
 
-            // 2. Fullscreen Viewer overlay
             if (isViewerOpen && viewerMedia.isNotEmpty()) {
                 LuminaViewer(
                     mediaList = viewerMedia,
@@ -191,30 +183,32 @@ fun LuminaApp(
                     repository = repository,
                     onPageChanged = { currentViewerPage = it },
                     onPrepareReturnRect = { targetMediaId ->
-                        val activeBounds = if (isFromAlbumViewer) albumTileBounds else photosTileBounds
-                        val activeStateForReturn = if (isFromAlbumViewer) albumGridState else photosGridState
-                        val existing = activeBounds[targetMediaId]
+                        val boundsMap = if (viewerOpenedFromAlbum) albumTileBounds else photosTileBounds
+                        val targetGrid = if (viewerOpenedFromAlbum) albumGridState else photosGridState
+                        val indexMap = if (viewerOpenedFromAlbum) {
+                            galleryState.albumMediaIdToGridIndex
+                        } else {
+                            galleryState.mediaIdToGridIndex
+                        }
+                        val existing = boundsMap[targetMediaId]
                         if (existing != null) {
                             existing
                         } else {
-                            val gridIdx = if (isFromAlbumViewer) {
-                                galleryState.albumMediaIdToGridIndex[targetMediaId]
-                            } else {
-                                galleryState.mediaIdToGridIndex[targetMediaId]
-                            }
+                            val gridIdx = indexMap[targetMediaId]
                             if (gridIdx != null) {
-                                activeStateForReturn.scrollToItem(gridIdx)
+                                targetGrid.scrollToItem(gridIdx)
                                 withFrameNanos { }
-                                activeBounds[targetMediaId]
+                                boundsMap[targetMediaId]
                             } else {
                                 null
                             }
                         }
                     },
                     onHiddenGridIdChange = { hiddenGridMediaId = it },
-                    onClosingStarted = { isViewerOpen = false },
+                    onClosingStarted = { isViewerClosing = true },
                     onDismissComplete = {
                         isViewerOpen = false
+                        isViewerClosing = false
                         viewerSourceRect = null
                         hiddenGridMediaId = null
                     },
@@ -222,27 +216,28 @@ fun LuminaApp(
                 )
             }
 
-            // 3. Bottom Dock
+            val dockInViewerMode = isViewerOpen && !isViewerClosing && safeViewerMedium != null
             val dockMode: DockMode? = when {
-                isViewerOpen && safeViewerMedium != null -> DockMode.Viewer(
+                dockInViewerMode && safeViewerMedium != null -> DockMode.Viewer(
                     medium = safeViewerMedium,
-                    onAddToAlbumClick = { showAddToAlbumSheet = true },
-                    onDeleteClick = {
-                        viewerViewModel.deleteCurrent(repository, safeViewerMedium)
-                    }
+                    onAddToAlbumClick = { pendingAddToAlbumItems = listOf(safeViewerMedium) },
+                    onDeleteClick = { viewerViewModel.deleteCurrent(repository, safeViewerMedium) }
                 )
 
-                !isViewerOpen && galleryState.isMultiSelectMode && !pickerMode -> DockMode.Selection(
+                !dockInViewerMode && galleryState.isMultiSelectMode && !pickerMode -> DockMode.Selection(
                     selectedCount = galleryState.selectedIds.size,
                     onShare = {
                         val selectedMedia = galleryState.allMedia.filter { it.id in galleryState.selectedIds }
                         shareMediaItems(context, selectedMedia)
                     },
-                    onAddToAlbum = { showAddToAlbumSheet = true },
+                    onAddToAlbum = {
+                        val selectedMedia = galleryState.allMedia.filter { it.id in galleryState.selectedIds }
+                        if (selectedMedia.isNotEmpty()) pendingAddToAlbumItems = selectedMedia
+                    },
                     onDelete = { galleryViewModel.trashSelected(true) }
                 )
 
-                !isViewerOpen -> DockMode.Home(
+                !dockInViewerMode -> DockMode.Home(
                     currentTab = galleryState.selectedTab,
                     isCollapsed = dockScrollState.isCollapsed,
                     showScrollToTop = showScrollToTop,
@@ -261,14 +256,10 @@ fun LuminaApp(
                         dockScrollState.expand()
                         galleryViewModel.setSearchActive(false)
                     },
-                    onSearchQueryChange = { query ->
-                        galleryViewModel.setSearchQuery(query)
-                    },
+                    onSearchQueryChange = { galleryViewModel.setSearchQuery(it) },
                     onScrollToTop = {
                         dockScrollState.expand()
-                        scope.launch {
-                            activeGridState.animateScrollToItem(0)
-                        }
+                        scope.launch { activeScrollGridState.animateScrollToItem(0) }
                     }
                 )
 
@@ -276,7 +267,7 @@ fun LuminaApp(
             }
 
             val isDockVisible = when {
-                isViewerOpen -> viewerState.isChromeVisible && !viewerState.isDetailsSheetOpen
+                dockInViewerMode -> viewerState.isChromeVisible && !viewerState.isDetailsSheetOpen && pendingAddToAlbumItems == null
                 galleryState.isMultiSelectMode -> !pickerMode
                 else -> true
             }
@@ -289,24 +280,24 @@ fun LuminaApp(
                 )
             }
 
-            // 4. Modal Add to Album Bottom Sheet
-            if (showAddToAlbumSheet) {
+            val itemsToAdd = pendingAddToAlbumItems
+            if (itemsToAdd != null) {
                 AddToAlbumSheet(
                     albums = galleryState.albums,
-                    itemCount = if (isViewerOpen) 1 else galleryState.selectedIds.size,
-                    onSelectAlbum = { albumName, relPath ->
-                        val itemsToAdd = if (isViewerOpen) {
-                            listOfNotNull(safeViewerMedium)
-                        } else {
-                            galleryState.allMedia.filter { it.id in galleryState.selectedIds }
-                        }
-                        galleryViewModel.addMediaToAlbum(itemsToAdd, albumName, relPath)
-                        showAddToAlbumSheet = false
-                        if (!isViewerOpen) {
-                            galleryViewModel.clearSelection()
+                    itemCount = itemsToAdd.size,
+                    onSelectAlbum = { albumName, relativePath ->
+                        pendingAddToAlbumItems = null
+                        galleryViewModel.addMediaToAlbum(
+                            items = itemsToAdd,
+                            albumName = albumName,
+                            targetRelativePath = relativePath
+                        ) { copied ->
+                            val msg = if (copied > 0) "Added to $albumName" else "Couldn't add to $albumName"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            if (galleryState.isMultiSelectMode) galleryViewModel.clearSelection()
                         }
                     },
-                    onDismiss = { showAddToAlbumSheet = false }
+                    onDismiss = { pendingAddToAlbumItems = null }
                 )
             }
         }
