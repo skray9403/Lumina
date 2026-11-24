@@ -37,11 +37,6 @@ data class LuminaPillTokens(
     val shadowElevation: Dp
 )
 
-/**
- * Pure tonal floating pill styling (no blur/glass):
- * - Light mode: bright elevated surfaceContainerLowest with subtle outline & soft shadow.
- * - Dark mode: surfaceContainerHigh with crisp subtle highlight hairline.
- */
 @Composable
 fun rememberLuminaPillTokens(
     darkOverride: Boolean? = null,
@@ -69,12 +64,13 @@ fun rememberLuminaPillTokens(
 }
 
 /**
- * Theme-matched top edge feather fade (white-to-transparent in Light Mode, dark in Dark Mode).
+ * Theme-matched top edge feather fade tuned to feather cleanly through the bottom third
+ * of the floating date pill without creating a solid opaque header strip.
  */
 @Composable
 fun TopEdgeFeatherFade(
     modifier: Modifier = Modifier,
-    height: Dp = 104.dp,
+    height: Dp = 108.dp,
     surfaceColor: Color = MaterialTheme.colorScheme.background
 ) {
     Box(
@@ -83,9 +79,9 @@ fun TopEdgeFeatherFade(
             .height(height)
             .drawWithCache {
                 val brush = Brush.verticalGradient(
-                    0.0f to surfaceColor.copy(alpha = 0.96f),
-                    0.50f to surfaceColor.copy(alpha = 0.72f),
-                    0.82f to surfaceColor.copy(alpha = 0.24f),
+                    0.0f to surfaceColor.copy(alpha = 0.94f),
+                    0.38f to surfaceColor.copy(alpha = 0.68f),
+                    0.70f to surfaceColor.copy(alpha = 0.22f),
                     1.0f to Color.Transparent
                 )
                 onDrawBehind {
@@ -95,9 +91,6 @@ fun TopEdgeFeatherFade(
     )
 }
 
-/**
- * Theme-matched bottom edge feather fade sitting cleanly behind the floating bottom dock.
- */
 @Composable
 fun BottomEdgeFeatherFade(
     modifier: Modifier = Modifier,
@@ -122,9 +115,6 @@ fun BottomEdgeFeatherFade(
     )
 }
 
-/**
- * Zero-subcomposition touch-down tactile compression executed strictly in graphicsLayer.
- */
 fun Modifier.pressScale(
     interactionSource: InteractionSource,
     pressedScale: Float = 0.94f

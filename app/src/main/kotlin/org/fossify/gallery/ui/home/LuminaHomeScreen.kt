@@ -124,7 +124,6 @@ fun LuminaHomeScreen(
         }
     }
 
-    // Back priority: Viewer -> Multi-select -> Search -> Album Overlay (Predictive) -> Albums tab -> Photos tab
     BackHandler(enabled = !isViewerOpen && state.isMultiSelectMode) {
         viewModel.clearSelection()
     }
@@ -155,8 +154,14 @@ fun LuminaHomeScreen(
 
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val gridContentPadding = PaddingValues(
-        top = statusBarTop + 62.dp,
+
+    // Top row starts right behind the bottom third of the floating date pill
+    val photosGridPadding = PaddingValues(
+        top = statusBarTop + 34.dp,
+        bottom = navBarBottom + 96.dp
+    )
+    val albumsGridPadding = PaddingValues(
+        top = statusBarTop + 56.dp,
         bottom = navBarBottom + 96.dp
     )
 
@@ -167,7 +172,6 @@ fun LuminaHomeScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // 1. Directional shared-axis Photos <-> Albums transition
         AnimatedContent(
             targetState = state.selectedTab,
             transitionSpec = {
@@ -190,7 +194,7 @@ fun LuminaHomeScreen(
                         EmptyOrPermissionState(
                             hasPermission = hasMediaPermission,
                             onRequestPermission = ::requestPermissions,
-                            contentPadding = gridContentPadding
+                            contentPadding = albumsGridPadding
                         )
                     } else {
                         MediaTimelineGrid(
@@ -203,7 +207,7 @@ fun LuminaHomeScreen(
                             tileBounds = photosTileBounds,
                             onMediaClick = { medium, rect -> onMediaClick(medium, rect, false) },
                             onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
-                            contentPadding = gridContentPadding
+                            contentPadding = photosGridPadding
                         )
                     }
                 }
@@ -212,15 +216,14 @@ fun LuminaHomeScreen(
                     AlbumsGrid(
                         albums = state.albums,
                         onAlbumClick = { album -> viewModel.openAlbum(album) },
-                        contentPadding = gridContentPadding
+                        contentPadding = albumsGridPadding
                     )
                 }
             }
         }
 
-        // 2. Theme-matched top & bottom feather fades (ChatGPT-style non-glass integration)
         TopEdgeFeatherFade(
-            height = statusBarTop + 68.dp,
+            height = statusBarTop + 72.dp,
             modifier = Modifier.align(Alignment.TopCenter)
         )
 
@@ -229,7 +232,6 @@ fun LuminaHomeScreen(
             modifier = Modifier.align(Alignment.BottomCenter)
         )
 
-        // 3. Top floating pills (when not inside Album overlay)
         if (state.activeAlbumId == null) {
             FloatingTopChrome(
                 gridState = if (state.selectedTab == GalleryTab.PHOTOS) photosGridState else null,
@@ -251,7 +253,6 @@ fun LuminaHomeScreen(
             )
         }
 
-        // 4. Stacked Album Overlay with native Predictive Back revealing live AlbumsGrid underneath
         if (state.activeAlbumId != null) {
             AlbumDetailOverlay(
                 albumName = state.activeAlbumName ?: "Album",

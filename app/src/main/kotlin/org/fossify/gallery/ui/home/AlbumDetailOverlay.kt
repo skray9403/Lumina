@@ -110,7 +110,7 @@ fun AlbumDetailOverlay(
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val gridContentPadding = PaddingValues(
-        top = statusBarTop + 62.dp,
+        top = statusBarTop + 34.dp,
         bottom = navBarBottom + 96.dp
     )
 
@@ -149,7 +149,7 @@ fun AlbumDetailOverlay(
         )
 
         TopEdgeFeatherFade(
-            height = statusBarTop + 68.dp,
+            height = statusBarTop + 72.dp,
             modifier = Modifier.align(Alignment.TopCenter)
         )
 

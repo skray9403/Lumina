@@ -122,7 +122,7 @@ fun LuminaApp(
     val showScrollToTop by remember(activeScrollGridState, galleryState.selectedTab, galleryState.activeAlbumId) {
         derivedStateOf {
             val isGridVisible = galleryState.activeAlbumId != null || galleryState.selectedTab == GalleryTab.PHOTOS
-            isGridVisible && activeScrollGridState.firstVisibleItemIndex >= 6
+            isGridVisible && activeScrollGridState.firstVisibleItemIndex >= 15
         }
     }
 

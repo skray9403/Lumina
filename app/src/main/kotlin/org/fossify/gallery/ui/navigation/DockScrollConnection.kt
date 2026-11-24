@@ -19,7 +19,8 @@ import kotlin.math.abs
 class DockScrollState(
     private val density: Float,
     private val velocityThresholdDpPerSec: Float = 600f,
-    private val cooldownMillis: Long = 160L
+    private val minTravelDp: Float = 18f,
+    private val cooldownMillis: Long = 220L
 ) {
     private data class DeltaSample(val timeNanos: Long, val dyPx: Float)
 
@@ -27,7 +28,7 @@ class DockScrollState(
         private set
 
     private val windowNanos = 50_000_000L
-    private val minWindowNanos = 16_000_000L
+    private val minWindowNanos = 20_000_000L
     private val samples = ArrayDeque<DeltaSample>(16)
     private var lastTriggerMillis = 0L
 
@@ -37,6 +38,10 @@ class DockScrollState(
             if (available.y == 0f) return Offset.Zero
 
             val nowNanos = System.nanoTime()
+            // Clear window immediately on direction reversal to avoid stale deltas
+            if (samples.isNotEmpty() && (samples.last().dyPx * available.y) < 0f) {
+                samples.clear()
+            }
             samples.addLast(DeltaSample(nowNanos, available.y))
 
             val cutoff = nowNanos - windowNanos
@@ -54,6 +59,9 @@ class DockScrollState(
                 sumDyPx += sample.dyPx
             }
 
+            val travelDp = abs(sumDyPx) / density
+            if (travelDp < minTravelDp) return Offset.Zero
+
             val elapsedSec = elapsedNanos / 1_000_000_000f
             val velocityDpPerSec = (sumDyPx / density) / elapsedSec
 
@@ -61,8 +69,12 @@ class DockScrollState(
             if (nowMillis - lastTriggerMillis >= cooldownMillis &&
                 abs(velocityDpPerSec) >= velocityThresholdDpPerSec
             ) {
-                lastTriggerMillis = nowMillis
-                isCollapsed = velocityDpPerSec < 0f
+                val targetCollapsed = velocityDpPerSec < 0f
+                if (targetCollapsed != isCollapsed) {
+                    lastTriggerMillis = nowMillis
+                    isCollapsed = targetCollapsed
+                    samples.clear()
+                }
             }
             return Offset.Zero
         }

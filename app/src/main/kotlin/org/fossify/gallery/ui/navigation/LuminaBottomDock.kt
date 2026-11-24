@@ -2,6 +2,7 @@ package org.fossify.gallery.ui.navigation
 
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.SizeTransform
@@ -14,8 +15,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -29,7 +28,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -65,6 +63,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -72,6 +71,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -112,7 +112,6 @@ import org.fossify.gallery.ui.theme.LuminaMotion
 import org.fossify.gallery.ui.theme.pressScale
 import org.fossify.gallery.ui.theme.rememberLuminaDarkColorScheme
 import org.fossify.gallery.ui.theme.rememberLuminaPillTokens
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private val DockHeight = 58.dp
@@ -190,7 +189,7 @@ fun LuminaBottomDock(
     val slotGapPx = with(density) { SlotGap.roundToPx() }
     val hasTrailingSlot = mode is DockMode.Home || mode is DockMode.Viewer
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
@@ -200,55 +199,54 @@ fun LuminaBottomDock(
                 translationY = slideProgress * hiddenOffsetPx
                 alpha = (1f - slideProgress * 1.15f).coerceIn(0f, 1f)
             },
-        horizontalAlignment = Alignment.CenterHorizontally
+        contentAlignment = Alignment.BottomCenter
     ) {
-        // Independent offset-gated Scroll-to-Top bubble floating 10dp above dock (Δy = 0)
+        // Independent Scroll-to-Top bubble anchored cleanly above the dock (zero overlap / Δy = 0)
         AnimatedVisibility(
             visible = homeMode != null && homeMode.showScrollToTop && !isSearchExpanded,
-            enter = fadeIn(tween(120)) +
-                scaleIn(LuminaMotion.expressiveBouncy(), initialScale = 0.72f) +
-                slideInVertically(LuminaMotion.expressiveSpatial()) { it / 2 },
-            exit = fadeOut(tween(90)) +
-                scaleOut(tween(100), targetScale = 0.75f) +
-                slideOutVertically(tween(100)) { it / 2 }
+            enter = fadeIn(tween(130)) + scaleIn(LuminaMotion.expressiveBouncy(), initialScale = 0.72f),
+            exit = fadeOut(tween(90)) + scaleOut(tween(100), targetScale = 0.75f),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = DockHeight + 12.dp)
         ) {
             val topInteraction = remember { MutableInteractionSource() }
-            Box(modifier = Modifier.padding(bottom = 10.dp)) {
-                Surface(
-                    shape = CircleShape,
-                    color = containerColor,
-                    contentColor = pillTokens.contentColor,
-                    border = pillTokens.border,
-                    shadowElevation = 5.dp,
+            Surface(
+                shape = CircleShape,
+                color = containerColor,
+                contentColor = pillTokens.contentColor,
+                border = pillTokens.border,
+                shadowElevation = 5.dp,
+                modifier = Modifier
+                    .size(42.dp)
+                    .pressScale(topInteraction, pressedScale = 0.88f)
+            ) {
+                Box(
                     modifier = Modifier
-                        .size(42.dp)
-                        .pressScale(topInteraction, pressedScale = 0.88f)
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = topInteraction,
+                            indication = ripple(bounded = true),
+                            role = Role.Button,
+                            onClick = { homeMode?.onScrollToTop?.invoke() }
+                        ),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(CircleShape)
-                            .clickable(
-                                interactionSource = topInteraction,
-                                indication = ripple(bounded = true),
-                                role = Role.Button,
-                                onClick = { homeMode?.onScrollToTop?.invoke() }
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ArrowUpward,
-                            contentDescription = "Scroll to top",
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.ArrowUpward,
+                        contentDescription = "Scroll to top",
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
         }
 
         // Persistent 2-slot expressive morphing cluster
         Layout(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth(),
             content = {
                 // Child 0: Primary morphing capsule
                 Surface(
@@ -295,7 +293,7 @@ fun LuminaBottomDock(
                     }
                 }
 
-                // Child 1: Trailing detached pill (Dedicated Search morph in Home; Expressive FAB Menu Share in Viewer)
+                // Child 1: Trailing detached pill
                 if (hasTrailingSlot) {
                     when (mode) {
                         is DockMode.Home -> MorphingSearchPill(
@@ -330,6 +328,7 @@ fun LuminaBottomDock(
             }
         ) { measurables, constraints ->
             val maxW = constraints.maxWidth
+            val clampedSearch = searchProgress.coerceIn(0f, 1f)
             val primaryMeasurable = measurables[0]
             val trailingMeasurable = measurables.getOrNull(1)
 
@@ -353,17 +352,17 @@ fun LuminaBottomDock(
             val trailingRestX = primaryRestX + primaryPlaceable.width + slotGapPx
 
             layout(maxW, barHeightPx) {
-                if (searchProgress < 0.98f) {
+                if (clampedSearch < 0.98f) {
                     primaryPlaceable.placeWithLayer(primaryRestX, 0) {
-                        val s = lerp(1f, 0.88f, searchProgress)
+                        val s = lerp(1f, 0.88f, clampedSearch)
                         scaleX = s
                         scaleY = s
-                        alpha = (1f - searchProgress * 2.2f).coerceIn(0f, 1f)
-                        translationX = -searchProgress * slotGapPx * 2f
+                        alpha = (1f - clampedSearch * 2.2f).coerceIn(0f, 1f)
+                        translationX = -clampedSearch * slotGapPx * 2f
                     }
                 }
                 if (trailingPlaceable != null) {
-                    val trailingX = lerp(trailingRestX.toFloat(), 0f, searchProgress).roundToInt()
+                    val trailingX = lerp(trailingRestX.toFloat(), 0f, clampedSearch).roundToInt()
                     trailingPlaceable.placeRelative(trailingX, 0)
                 }
             }
@@ -371,10 +370,6 @@ fun LuminaBottomDock(
     }
 }
 
-/**
- * Dedicated right Search FAB (secondaryContainer tonal contrast) smoothly morphing
- * via expressive spring into a full-width bottom Search field with synchronous cursor handling.
- */
 @Composable
 private fun MorphingSearchPill(
     searchProgress: Float,
@@ -424,6 +419,8 @@ private fun MorphingSearchPill(
         label = "search_pill_tint"
     )
 
+    val clamped = searchProgress.coerceIn(0f, 1f)
+
     Surface(
         shape = CircleShape,
         color = bg,
@@ -432,7 +429,7 @@ private fun MorphingSearchPill(
         modifier = Modifier
             .fillMaxSize()
             .then(
-                if (!isSearchActive && searchProgress < 0.2f) {
+                if (!isSearchActive && clamped < 0.2f) {
                     Modifier.pressScale(interactionSource, pressedScale = 0.88f)
                 } else {
                     Modifier
@@ -457,7 +454,7 @@ private fun MorphingSearchPill(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            val fabAlpha = (1f - searchProgress * 3.0f).coerceIn(0f, 1f)
+            val fabAlpha = (1f - clamped * 3.0f).coerceIn(0f, 1f)
             if (fabAlpha > 0.01f) {
                 Box(
                     modifier = Modifier
@@ -474,7 +471,7 @@ private fun MorphingSearchPill(
                 }
             }
 
-            val fieldAlpha = ((searchProgress - 0.25f) / 0.75f).coerceIn(0f, 1f)
+            val fieldAlpha = ((clamped - 0.25f) / 0.75f).coerceIn(0f, 1f)
             if (fieldAlpha > 0.01f) {
                 Row(
                     modifier = Modifier
@@ -557,12 +554,11 @@ private fun MorphingSearchPill(
 }
 
 /**
- * Material 3 Expressive FAB Menu Share button:
- * - Normal tap: launches native Android Sharesheet.
- * - Single-motion press + drag up + release: cascades staggered Material 3 Expressive
- *   full-capsule [Icon + App Name] pills right above the FAB while morphing the FAB to the
- *   circular '×' state; sliding over any pill highlights it with haptic feedback and executes
- *   direct share on finger lift. Zero layout impact on the bottom bar.
+ * Long-press Material 3 Expressive FAB Menu Share button:
+ * - Short tap: native Android Sharesheet.
+ * - Long press (320ms): cascades Expressive [Icon + App Name] pills above the FAB.
+ *   • Drag without lifting -> highlights hovered app with haptic, shares directly on finger lift.
+ *   • Lift finger on FAB -> keeps menu pinned open so you can tap any option (or tap outside / × / Back).
  */
 @Composable
 private fun ExpressiveSmartShareFab(
@@ -581,7 +577,10 @@ private fun ExpressiveSmartShareFab(
     val latestMedium by rememberUpdatedState(medium)
 
     var isQuickMenuOpen by remember { mutableStateOf(false) }
+    var isMenuPinned by remember { mutableStateOf(false) }
+    val latestMenuPinned by rememberUpdatedState(isMenuPinned)
     var hoveredIndex by remember { mutableIntStateOf(-1) }
+    var lastDismissTimeMs by remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(medium.mimeType) {
         recentTargets = RecentShareStore.loadRecentTargets(context, medium.mimeType)
@@ -589,6 +588,7 @@ private fun ExpressiveSmartShareFab(
 
     LaunchedEffect(medium.id) {
         isQuickMenuOpen = false
+        isMenuPinned = false
         hoveredIndex = -1
     }
 
@@ -596,7 +596,6 @@ private fun ExpressiveSmartShareFab(
     val itemHeightDp = 52.dp
     val itemGapDp = 8.dp
     val itemStridePx = with(density) { (itemHeightDp + itemGapDp).toPx() }
-    val dragOpenThresholdPx = with(density) { 14.dp.toPx() }
     val maxLeftDriftPx = with(density) { 230.dp.toPx() }
     val maxRightDriftPx = with(density) { 44.dp.toPx() }
 
@@ -639,13 +638,24 @@ private fun ExpressiveSmartShareFab(
         if (isQuickMenuOpen && recentTargets.isNotEmpty()) {
             Popup(
                 popupPositionProvider = popupPositionProvider,
-                properties = PopupProperties(focusable = false, clippingEnabled = false)
+                onDismissRequest = {
+                    lastDismissTimeMs = SystemClock.uptimeMillis()
+                    isQuickMenuOpen = false
+                    isMenuPinned = false
+                    hoveredIndex = -1
+                },
+                // Non-focusable while finger is dragging; focusable once pinned so tap-outside & Back dismiss cleanly
+                properties = PopupProperties(
+                    focusable = isMenuPinned,
+                    dismissOnBackPress = isMenuPinned,
+                    dismissOnClickOutside = isMenuPinned,
+                    clippingEnabled = false
+                )
             ) {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(itemGapDp),
                     horizontalAlignment = Alignment.End
                 ) {
-                    // Index 0 sits closest to thumb at bottom; cascade staggers bottom -> top
                     recentTargets.asReversed().forEachIndexed { visualIdx, target ->
                         val logicalIdx = recentTargets.lastIndex - visualIdx
                         val isHovered = logicalIdx == hoveredIndex
@@ -653,8 +663,15 @@ private fun ExpressiveSmartShareFab(
                             target = target,
                             staggerIndex = logicalIdx,
                             isHovered = isHovered,
+                            clickableEnabled = isMenuPinned,
                             darkScheme = darkScheme,
-                            height = itemHeightDp
+                            height = itemHeightDp,
+                            onClick = {
+                                isQuickMenuOpen = false
+                                isMenuPinned = false
+                                hoveredIndex = -1
+                                RecentShareStore.shareDirectlyTo(context, latestMedium, target)
+                            }
                         )
                     }
                 }
@@ -672,64 +689,107 @@ private fun ExpressiveSmartShareFab(
                 .pointerInput(medium.id) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        val startY = down.position.y
-                        var dragMenuActive = false
+                        val downPos = down.position
                         var movedPastSlop = false
+
+                        // If pinned menu was just dismissed by tapping the FAB, consume without re-opening Sharesheet
+                        if (latestMenuPinned || (SystemClock.uptimeMillis() - lastDismissTimeMs) < 250L) {
+                            do {
+                                val ev = awaitPointerEvent()
+                            } while (ev.changes.any { it.pressed })
+                            isQuickMenuOpen = false
+                            isMenuPinned = false
+                            hoveredIndex = -1
+                            return@awaitEachGesture
+                        }
+
+                        // Wait up to 320ms for long-press without exceeding touchSlop
+                        val timedOut = withTimeoutOrNull(320L) {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull() ?: return@withTimeoutOrNull true
+                                if (!change.pressed) return@withTimeoutOrNull true
+                                if ((change.position - downPos).getDistance() > viewConfiguration.touchSlop) {
+                                    movedPastSlop = true
+                                    return@withTimeoutOrNull true
+                                }
+                            }
+                        } == null
+
+                        if (!timedOut) {
+                            if (!movedPastSlop) {
+                                RecentShareStore.launchNativeShareSheet(context, latestMedium)
+                            }
+                            return@awaitEachGesture
+                        }
+
+                        // Long-press triggered while finger is still down
+                        val targets = latestTargets
+                        if (targets.isEmpty()) {
+                            RecentShareStore.launchNativeShareSheet(context, latestMedium)
+                            return@awaitEachGesture
+                        }
+
+                        isQuickMenuOpen = true
+                        isMenuPinned = false
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+
+                        var draggedIntoMenu = false
                         var lastHovered = -1
 
-                        do {
+                        while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull() ?: break
-                            val dyFromDown = change.position.y - startY
+                            if (!change.pressed) break
 
-                            if (abs(dyFromDown) > viewConfiguration.touchSlop) {
-                                movedPastSlop = true
+                            change.consume()
+                            val yAboveFabTop = -change.position.y
+                            val posX = change.position.x
+                            val inHorizontalBand = posX >= -maxLeftDriftPx && posX <= size.width + maxRightDriftPx
+                            val distIntoStack = yAboveFabTop - popupGapPx
+
+                            val nextHover = if (
+                                inHorizontalBand &&
+                                distIntoStack >= -itemStridePx * 0.2f &&
+                                distIntoStack <= targets.size * itemStridePx + itemStridePx * 0.3f
+                            ) {
+                                draggedIntoMenu = true
+                                (distIntoStack.coerceAtLeast(0f) / itemStridePx)
+                                    .toInt()
+                                    .coerceIn(0, targets.lastIndex)
+                            } else {
+                                -1
                             }
 
-                            val targets = latestTargets
-                            if (!dragMenuActive && dyFromDown < -dragOpenThresholdPx && targets.isNotEmpty()) {
-                                dragMenuActive = true
-                                isQuickMenuOpen = true
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            }
-
-                            if (dragMenuActive) {
-                                change.consume()
-                                val yAboveFabTop = -change.position.y
-                                val posX = change.position.x
-                                val inHorizontalBand = posX >= -maxLeftDriftPx && posX <= size.width + maxRightDriftPx
-                                val distIntoStack = yAboveFabTop - popupGapPx
-                                val nextHover = if (
-                                    inHorizontalBand &&
-                                    distIntoStack >= -itemStridePx * 0.2f &&
-                                    distIntoStack <= targets.size * itemStridePx + itemStridePx * 0.3f
-                                ) {
-                                    (distIntoStack.coerceAtLeast(0f) / itemStridePx)
-                                        .toInt()
-                                        .coerceIn(0, targets.lastIndex)
-                                } else {
-                                    -1
-                                }
-
-                                if (nextHover != lastHovered) {
-                                    lastHovered = nextHover
-                                    hoveredIndex = nextHover
-                                    if (nextHover != -1) {
-                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    }
+                            if (nextHover != lastHovered) {
+                                lastHovered = nextHover
+                                hoveredIndex = nextHover
+                                if (nextHover != -1) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 }
                             }
-                        } while (event.changes.any { it.pressed })
+                        }
 
-                        if (dragMenuActive) {
-                            val chosen = latestTargets.getOrNull(lastHovered)
-                            isQuickMenuOpen = false
-                            hoveredIndex = -1
-                            if (chosen != null) {
+                        val chosen = latestTargets.getOrNull(lastHovered)
+                        when {
+                            chosen != null -> {
+                                // Path A: Dragged onto an app and lifted finger -> share immediately
+                                isQuickMenuOpen = false
+                                isMenuPinned = false
+                                hoveredIndex = -1
                                 RecentShareStore.shareDirectlyTo(context, latestMedium, chosen)
                             }
-                        } else if (!movedPastSlop) {
-                            RecentShareStore.launchNativeShareSheet(context, latestMedium)
+                            !draggedIntoMenu -> {
+                                // Path B: Lifted finger right on FAB -> keep menu pinned open for tap
+                                isMenuPinned = true
+                                hoveredIndex = -1
+                            }
+                            else -> {
+                                // Dragged onto menu then off to cancel
+                                isQuickMenuOpen = false
+                                isMenuPinned = false
+                                hoveredIndex = -1
+                            }
                         }
                     }
                 }
@@ -740,7 +800,7 @@ private fun ExpressiveSmartShareFab(
             ) {
                 Icon(
                     imageVector = if (isQuickMenuOpen) Icons.Default.Close else Icons.Default.Share,
-                    contentDescription = "Share (drag up for recent apps)",
+                    contentDescription = "Share (long press for recent apps)",
                     tint = fabTint,
                     modifier = Modifier.size(23.dp)
                 )
@@ -754,10 +814,13 @@ private fun ExpressiveShareMenuItemPill(
     target: QuickShareTarget,
     staggerIndex: Int,
     isHovered: Boolean,
+    clickableEnabled: Boolean,
     darkScheme: ColorScheme,
-    height: Dp
+    height: Dp,
+    onClick: () -> Unit
 ) {
     val density = LocalDensity.current
+    val interactionSource = remember { MutableInteractionSource() }
     val appear = remember { Animatable(0f) }
 
     LaunchedEffect(Unit) {
@@ -789,6 +852,10 @@ private fun ExpressiveShareMenuItemPill(
         shadowElevation = if (isHovered) 10.dp else 6.dp,
         modifier = Modifier
             .height(height)
+            .then(
+                if (clickableEnabled) Modifier.pressScale(interactionSource, pressedScale = 0.94f)
+                else Modifier
+            )
             .graphicsLayer {
                 val p = appear.value
                 val s = lerp(0.80f, 1f, p) * hoverScale
@@ -799,7 +866,16 @@ private fun ExpressiveShareMenuItemPill(
             }
     ) {
         Row(
-            modifier = Modifier.padding(start = 12.dp, end = 20.dp),
+            modifier = Modifier
+                .clip(CircleShape)
+                .clickable(
+                    enabled = clickableEnabled,
+                    interactionSource = interactionSource,
+                    indication = ripple(bounded = true),
+                    role = Role.Button,
+                    onClick = onClick
+                )
+                .padding(start = 12.dp, end = 20.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -822,10 +898,6 @@ private fun ExpressiveShareMenuItemPill(
     }
 }
 
-/**
- * Substantial 58dp expressive navigation dock with spring-driven sliding active indicator,
- * active icon scale pop, and smooth spring scroll collapse.
- */
 @Composable
 private fun HomeDockContent(
     currentTab: GalleryTab,
@@ -838,6 +910,7 @@ private fun HomeDockContent(
         animationSpec = LuminaMotion.expressiveSpatial(),
         label = "dock_collapse_progress"
     )
+    // Intentionally unclamped so tab switching keeps expressive spring overshoot
     val selectedPosition by animateFloatAsState(
         targetValue = if (currentTab == GalleryTab.PHOTOS) 0f else 1f,
         animationSpec = LuminaMotion.expressiveSpatial(),
@@ -919,8 +992,10 @@ private fun SlidingDockTab(
         label = "tab_icon_pop"
     )
 
-    val horizontalPad = lerp(18f, 15f, collapseProgress).coerceAtLeast(0f).dp
-    val iconTextGap = (8f * (1f - collapseProgress)).coerceAtLeast(0f).dp
+    // Collapsed pad = 13dp -> 13 + 22 + 13 = 48dp exact circle matching InnerPillHeight
+    val expandFraction = (1f - collapseProgress).coerceAtLeast(0f)
+    val horizontalPad = lerp(13f, 18f, expandFraction).coerceAtLeast(0f).dp
+    val iconTextGap = (8f * expandFraction).coerceAtLeast(0f).dp
 
     Row(
         modifier = Modifier
@@ -948,8 +1023,11 @@ private fun SlidingDockTab(
                 }
         )
 
+        // Synchronized clip + fade keeps text tucked cleanly with zero empty blank void
         Layout(
-            modifier = Modifier.padding(start = iconTextGap),
+            modifier = Modifier
+                .padding(start = iconTextGap)
+                .clipToBounds(),
             content = {
                 Text(
                     text = title,
@@ -963,10 +1041,10 @@ private fun SlidingDockTab(
             }
         ) { measurables, constraints ->
             val p = measurables[0].measure(constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity))
-            val currentW = (p.width * (1f - collapseProgress)).roundToInt().coerceAtLeast(0)
+            val currentW = (p.width * expandFraction).roundToInt().coerceAtLeast(0)
             layout(currentW, p.height) {
-                val labelAlpha = (1f - collapseProgress * 1.7f).coerceIn(0f, 1f)
-                if (labelAlpha > 0.01f) {
+                val labelAlpha = ((expandFraction - 0.10f) / 0.90f).coerceIn(0f, 1f)
+                if (labelAlpha > 0.01f && currentW > 0) {
                     p.placeWithLayer(0, 0) { alpha = labelAlpha }
                 }
             }
@@ -974,9 +1052,6 @@ private fun SlidingDockTab(
     }
 }
 
-/**
- * Connected Material 3 Expressive 3-pill selection bar with distinct tonal containers.
- */
 @Composable
 private fun SelectionDockContent(
     onShare: () -> Unit,
@@ -1022,11 +1097,6 @@ private fun SelectionDockContent(
     }
 }
 
-/**
- * Connected Material 3 Expressive Viewer bar:
- * 3 visually distinct tonal capsules with asymmetric outer/inner corner radii that morph on press.
- * [ Edit (neutral tonal) | + Add to (secondaryContainer hero) | Delete (error-tinted) ]
- */
 @Composable
 private fun ViewerDockContent(
     medium: Medium,
@@ -1093,7 +1163,6 @@ private fun ConnectedActionPill(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
-    // Expressive corner-radius morph on touch-down (connected inner 10dp softens to 18dp)
     val startCorner by animateDpAsState(
         targetValue = if (isPressed) 18.dp else outerStartRadius,
         animationSpec = LuminaMotion.expressiveSnappy(),
@@ -1104,11 +1173,13 @@ private fun ConnectedActionPill(
         animationSpec = LuminaMotion.expressiveSnappy(),
         label = "connected_end_corner"
     )
+    val safeStart = startCorner.coerceAtLeast(0.dp)
+    val safeEnd = endCorner.coerceAtLeast(0.dp)
     val shape = RoundedCornerShape(
-        topStart = startCorner.coerceAtLeast(0.dp),
-        bottomStart = startCorner.coerceAtLeast(0.dp),
-        topEnd = endCorner.coerceAtLeast(0.dp),
-        bottomEnd = endCorner.coerceAtLeast(0.dp)
+        topStart = safeStart,
+        bottomStart = safeStart,
+        topEnd = safeEnd,
+        bottomEnd = safeEnd
     )
 
     Box(
