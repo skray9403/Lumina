@@ -4,18 +4,28 @@ import androidx.activity.BackEventCompat
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,13 +45,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.ui.navigation.DockScrollState
-import org.fossify.gallery.ui.theme.BottomEdgeFeatherFade
 import org.fossify.gallery.ui.theme.LuminaMotion
-import org.fossify.gallery.ui.theme.TopEdgeFeatherFade
 
 @Composable
 fun AlbumDetailOverlay(
     albumName: String,
+    isTrashOverlay: Boolean,
     media: List<Medium>,
     indexToDatePill: List<String>,
     gridState: LazyGridState,
@@ -110,7 +119,7 @@ fun AlbumDetailOverlay(
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val gridContentPadding = PaddingValues(
-        top = statusBarTop + 26.dp,
+        top = statusBarTop + 62.dp,
         bottom = navBarBottom + 96.dp
     )
 
@@ -132,37 +141,67 @@ fun AlbumDetailOverlay(
             }
             .background(MaterialTheme.colorScheme.background)
     ) {
-        MediaTimelineGrid(
-            media = media,
-            columnCount = columnCount,
-            gridState = gridState,
-            selectedIds = selectedIds,
-            isMultiSelectMode = isMultiSelectMode,
-            hiddenMediaId = hiddenMediaId,
-            onGridRootOffsetChange = onGridRootOffsetChange,
-            onMediaClick = onMediaClick,
-            onMediaLongClick = onMediaLongClick,
-            contentPadding = gridContentPadding,
-            modifier = Modifier
-                .fillMaxSize()
-                .nestedScroll(dockScrollState.nestedScrollConnection)
-        )
-
-        TopEdgeFeatherFade(
-            statusBarHeight = statusBarTop,
-            height = statusBarTop + 96.dp,
-            modifier = Modifier.align(Alignment.TopCenter)
-        )
-
-        BottomEdgeFeatherFade(
-            height = navBarBottom + 98.dp,
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
+        if (media.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(gridContentPadding),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier.padding(32.dp)
+                ) {
+                    Icon(
+                        imageVector = when {
+                            isTrashOverlay -> Icons.Default.DeleteOutline
+                            albumName == "Favorites" -> Icons.Default.FavoriteBorder
+                            else -> Icons.Default.PhotoLibrary
+                        },
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.size(52.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = when {
+                            isTrashOverlay -> "Trash is empty"
+                            albumName == "Favorites" -> "No favorites yet"
+                            else -> "No items in $albumName"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        } else {
+            MediaTimelineGrid(
+                media = media,
+                indexToDatePill = indexToDatePill,
+                columnCount = columnCount,
+                gridState = gridState,
+                selectedIds = selectedIds,
+                isMultiSelectMode = isMultiSelectMode,
+                hiddenMediaId = hiddenMediaId,
+                onGridRootOffsetChange = onGridRootOffsetChange,
+                onColumnCountChange = onColumnCountChange,
+                onMediaClick = onMediaClick,
+                onMediaLongClick = onMediaLongClick,
+                contentPadding = gridContentPadding,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .nestedScroll(dockScrollState.nestedScrollConnection)
+            )
+        }
 
         FloatingTopChrome(
             gridState = gridState,
             indexToDatePill = indexToDatePill,
-            staticTitle = albumName,
+            headerTitle = albumName,
+            staticFloatingTitle = albumName,
+            statusBarHeight = statusBarTop,
+            alwaysFloating = true,
             isMultiSelectMode = isMultiSelectMode,
             selectedCount = selectedIds.size,
             columnCount = columnCount,
@@ -173,10 +212,7 @@ fun AlbumDetailOverlay(
             onClearSelection = onClearSelection,
             onSelectAll = onSelectAll,
             onConfirmPick = onConfirmPick,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 6.dp)
+            modifier = Modifier.align(Alignment.TopCenter)
         )
     }
 }

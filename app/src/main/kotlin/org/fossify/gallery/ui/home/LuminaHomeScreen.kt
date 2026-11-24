@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -54,21 +53,20 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.ui.navigation.DockScrollState
-import org.fossify.gallery.ui.theme.BottomEdgeFeatherFade
 import org.fossify.gallery.ui.theme.LuminaMotion
-import org.fossify.gallery.ui.theme.TopEdgeFeatherFade
 
 @Composable
 fun LuminaHomeScreen(
     viewModel: GalleryViewModel,
     photosGridState: LazyGridState,
+    albumsGridState: LazyGridState,
     albumGridState: LazyGridState,
     dockScrollState: DockScrollState,
     onPhotosGridRootOffsetChange: (Offset) -> Unit,
     onAlbumGridRootOffsetChange: (Offset) -> Unit,
     hiddenMediaId: Long?,
     isViewerOpen: Boolean,
-    onMediaClick: (Medium, Boolean) -> Unit,
+    onMediaClick: (Medium, Boolean, Boolean) -> Unit,
     modifier: Modifier = Modifier,
     pickerMode: Boolean = false,
     allowMultiple: Boolean = false,
@@ -155,13 +153,9 @@ fun LuminaHomeScreen(
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
-    // Row 1 starts inside the high-opacity zone of TopEdgeFeatherFade so bright photos never cut off harshly
-    val photosGridPadding = PaddingValues(
-        top = statusBarTop + 26.dp,
-        bottom = navBarBottom + 96.dp
-    )
-    val albumsGridPadding = PaddingValues(
-        top = statusBarTop + 58.dp,
+    // Row 1 starts cleanly below the scroll-0 header bar (zero fog/overlap at rest)
+    val gridContentPadding = PaddingValues(
+        top = statusBarTop + 62.dp,
         bottom = navBarBottom + 96.dp
     )
 
@@ -194,20 +188,22 @@ fun LuminaHomeScreen(
                         EmptyOrPermissionState(
                             hasPermission = hasMediaPermission,
                             onRequestPermission = ::requestPermissions,
-                            contentPadding = albumsGridPadding
+                            contentPadding = gridContentPadding
                         )
                     } else {
                         MediaTimelineGrid(
                             media = state.visibleMedia,
+                            indexToDatePill = state.indexToDatePill,
                             columnCount = state.columnCount,
                             gridState = photosGridState,
                             selectedIds = state.selectedIds,
                             isMultiSelectMode = state.isMultiSelectMode,
                             hiddenMediaId = if (state.activeAlbumId == null) hiddenMediaId else null,
                             onGridRootOffsetChange = onPhotosGridRootOffsetChange,
-                            onMediaClick = { medium -> onMediaClick(medium, false) },
+                            onColumnCountChange = { viewModel.setColumnCount(it) },
+                            onMediaClick = { medium -> onMediaClick(medium, false, false) },
                             onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
-                            contentPadding = photosGridPadding
+                            contentPadding = gridContentPadding
                         )
                     }
                 }
@@ -215,29 +211,28 @@ fun LuminaHomeScreen(
                 GalleryTab.ALBUMS -> {
                     AlbumsGrid(
                         albums = state.albums,
+                        favoriteCount = state.favoriteCount,
+                        trashedCount = state.trashedMedia.size,
+                        onFavoritesClick = { viewModel.openFavorites() },
+                        onTrashClick = { viewModel.openTrash() },
                         onAlbumClick = { album -> viewModel.openAlbum(album) },
-                        contentPadding = albumsGridPadding
+                        gridState = albumsGridState,
+                        contentPadding = gridContentPadding
                     )
                 }
             }
         }
 
-        TopEdgeFeatherFade(
-            statusBarHeight = statusBarTop,
-            height = statusBarTop + 96.dp,
-            modifier = Modifier.align(Alignment.TopCenter)
-        )
-
-        BottomEdgeFeatherFade(
-            height = navBarBottom + 98.dp,
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
-
+        // Scroll-0 "Lumina" / "Albums" header -> tight snap floating pills + status-bar-only halo
         if (state.activeAlbumId == null) {
+            val activeTabGrid = if (state.selectedTab == GalleryTab.PHOTOS) photosGridState else albumsGridState
             FloatingTopChrome(
-                gridState = if (state.selectedTab == GalleryTab.PHOTOS) photosGridState else null,
-                indexToDatePill = state.indexToDatePill,
-                staticTitle = if (state.selectedTab == GalleryTab.ALBUMS) "Albums" else null,
+                gridState = activeTabGrid,
+                indexToDatePill = if (state.selectedTab == GalleryTab.PHOTOS) state.indexToDatePill else emptyList(),
+                headerTitle = if (state.selectedTab == GalleryTab.PHOTOS) "Lumina" else "Albums",
+                staticFloatingTitle = if (state.selectedTab == GalleryTab.ALBUMS) "Albums" else null,
+                statusBarHeight = statusBarTop,
+                alwaysFloating = false,
                 isMultiSelectMode = state.isMultiSelectMode,
                 selectedCount = state.selectedIds.size,
                 columnCount = state.columnCount,
@@ -247,16 +242,14 @@ fun LuminaHomeScreen(
                 onClearSelection = { viewModel.clearSelection() },
                 onSelectAll = { viewModel.selectAll() },
                 onConfirmPick = onConfirmPick,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                modifier = Modifier.align(Alignment.TopCenter)
             )
         }
 
         if (state.activeAlbumId != null) {
             AlbumDetailOverlay(
                 albumName = state.activeAlbumName ?: "Album",
+                isTrashOverlay = state.isTrashOverlay,
                 media = state.albumMedia,
                 indexToDatePill = state.albumIndexToDatePill,
                 gridState = albumGridState,
@@ -268,7 +261,7 @@ fun LuminaHomeScreen(
                 onGridRootOffsetChange = onAlbumGridRootOffsetChange,
                 showConfirmPick = pickerMode && allowMultiple,
                 enabledBack = !isViewerOpen && !state.isMultiSelectMode && !state.isSearchActive,
-                onMediaClick = { medium -> onMediaClick(medium, true) },
+                onMediaClick = { medium -> onMediaClick(medium, true, state.isTrashOverlay) },
                 onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
                 onColumnCountChange = { viewModel.setColumnCount(it) },
                 onRefresh = { viewModel.refresh() },

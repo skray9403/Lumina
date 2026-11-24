@@ -47,9 +47,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PhotoSizeSelectActual
+import androidx.compose.material.icons.filled.RestoreFromTrash
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.ColorScheme
@@ -136,14 +138,18 @@ sealed interface DockMode {
 
     data class Selection(
         val selectedCount: Int,
+        val isTrashMode: Boolean = false,
         val onShare: () -> Unit,
         val onAddToAlbum: () -> Unit,
+        val onRestore: () -> Unit = {},
         val onDelete: () -> Unit
     ) : DockMode
 
     data class Viewer(
         val medium: Medium,
+        val isTrashMode: Boolean = false,
         val onAddToAlbumClick: () -> Unit,
+        val onRestoreClick: () -> Unit = {},
         val onDeleteClick: () -> Unit
     ) : DockMode
 }
@@ -187,7 +193,7 @@ fun LuminaBottomDock(
 
     val barHeightPx = with(density) { DockHeight.roundToPx() }
     val slotGapPx = with(density) { SlotGap.roundToPx() }
-    val hasTrailingSlot = mode is DockMode.Home || mode is DockMode.Viewer
+    val hasTrailingSlot = mode is DockMode.Home || (mode is DockMode.Viewer && !mode.isTrashMode)
 
     Box(
         modifier = modifier
@@ -201,7 +207,6 @@ fun LuminaBottomDock(
             },
         contentAlignment = Alignment.BottomCenter
     ) {
-        // Independent Scroll-to-Top bubble anchored cleanly above the dock (zero overlap / Δy = 0)
         AnimatedVisibility(
             visible = homeMode != null && homeMode.showScrollToTop && !isSearchExpanded,
             enter = fadeIn(tween(130)) + scaleIn(LuminaMotion.expressiveBouncy(), initialScale = 0.72f),
@@ -242,13 +247,11 @@ fun LuminaBottomDock(
             }
         }
 
-        // Persistent 2-slot expressive morphing cluster
         Layout(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth(),
             content = {
-                // Child 0: Primary morphing capsule
                 Surface(
                     shape = CircleShape,
                     color = containerColor,
@@ -258,7 +261,13 @@ fun LuminaBottomDock(
                 ) {
                     AnimatedContent(
                         targetState = mode,
-                        contentKey = { it::class },
+                        contentKey = {
+                            when (it) {
+                                is DockMode.Home -> "home"
+                                is DockMode.Selection -> if (it.isTrashMode) "sel_trash" else "sel"
+                                is DockMode.Viewer -> if (it.isTrashMode) "view_trash" else "view"
+                            }
+                        },
                         transitionSpec = {
                             (fadeIn(LuminaMotion.throughZeroEnter) +
                                 scaleIn(LuminaMotion.throughZeroEnter, initialScale = 0.94f)) togetherWith
@@ -277,15 +286,19 @@ fun LuminaBottomDock(
                             )
 
                             is DockMode.Selection -> SelectionDockContent(
+                                isTrashMode = targetMode.isTrashMode,
                                 onShare = targetMode.onShare,
                                 onAddToAlbum = targetMode.onAddToAlbum,
+                                onRestore = targetMode.onRestore,
                                 onDelete = targetMode.onDelete
                             )
 
                             is DockMode.Viewer -> ViewerDockContent(
                                 medium = targetMode.medium,
+                                isTrashMode = targetMode.isTrashMode,
                                 darkScheme = darkDynamicScheme,
                                 onAddToAlbumClick = targetMode.onAddToAlbumClick,
+                                onRestoreClick = targetMode.onRestoreClick,
                                 onDeleteClick = targetMode.onDeleteClick,
                                 context = context
                             )
@@ -293,7 +306,6 @@ fun LuminaBottomDock(
                     }
                 }
 
-                // Child 1: Trailing detached pill
                 if (hasTrailingSlot) {
                     when (mode) {
                         is DockMode.Home -> MorphingSearchPill(
@@ -553,13 +565,6 @@ private fun MorphingSearchPill(
     }
 }
 
-/**
- * Long-press Material 3 Expressive FAB Menu Share button:
- * - Short tap: native Android Sharesheet.
- * - Long press (320ms): cascades Expressive [Icon + App Name] pills above the FAB.
- *   • Drag without lifting -> highlights hovered app with haptic, shares directly on finger lift.
- *   • Lift finger on FAB -> keeps menu pinned open so you can tap any option (or tap outside / × / Back).
- */
 @Composable
 private fun ExpressiveSmartShareFab(
     medium: Medium,
@@ -644,7 +649,6 @@ private fun ExpressiveSmartShareFab(
                     isMenuPinned = false
                     hoveredIndex = -1
                 },
-                // Non-focusable while finger is dragging; focusable once pinned so tap-outside & Back dismiss cleanly
                 properties = PopupProperties(
                     focusable = isMenuPinned,
                     dismissOnBackPress = isMenuPinned,
@@ -692,7 +696,6 @@ private fun ExpressiveSmartShareFab(
                         val downPos = down.position
                         var movedPastSlop = false
 
-                        // If pinned menu was just dismissed by tapping the FAB, consume without re-opening Sharesheet
                         if (latestMenuPinned || (SystemClock.uptimeMillis() - lastDismissTimeMs) < 250L) {
                             do {
                                 val ev = awaitPointerEvent()
@@ -703,7 +706,6 @@ private fun ExpressiveSmartShareFab(
                             return@awaitEachGesture
                         }
 
-                        // Wait up to 320ms for long-press without exceeding touchSlop
                         val timedOut = withTimeoutOrNull(320L) {
                             while (true) {
                                 val event = awaitPointerEvent()
@@ -723,7 +725,6 @@ private fun ExpressiveSmartShareFab(
                             return@awaitEachGesture
                         }
 
-                        // Long-press triggered while finger is still down
                         val targets = latestTargets
                         if (targets.isEmpty()) {
                             RecentShareStore.launchNativeShareSheet(context, latestMedium)
@@ -773,19 +774,16 @@ private fun ExpressiveSmartShareFab(
                         val chosen = latestTargets.getOrNull(lastHovered)
                         when {
                             chosen != null -> {
-                                // Path A: Dragged onto an app and lifted finger -> share immediately
                                 isQuickMenuOpen = false
                                 isMenuPinned = false
                                 hoveredIndex = -1
                                 RecentShareStore.shareDirectlyTo(context, latestMedium, chosen)
                             }
                             !draggedIntoMenu -> {
-                                // Path B: Lifted finger right on FAB -> keep menu pinned open for tap
                                 isMenuPinned = true
                                 hoveredIndex = -1
                             }
                             else -> {
-                                // Dragged onto menu then off to cancel
                                 isQuickMenuOpen = false
                                 isMenuPinned = false
                                 hoveredIndex = -1
@@ -910,7 +908,6 @@ private fun HomeDockContent(
         animationSpec = LuminaMotion.expressiveSpatial(),
         label = "dock_collapse_progress"
     )
-    // Intentionally unclamped so tab switching keeps expressive spring overshoot
     val selectedPosition by animateFloatAsState(
         targetValue = if (currentTab == GalleryTab.PHOTOS) 0f else 1f,
         animationSpec = LuminaMotion.expressiveSpatial(),
@@ -992,7 +989,6 @@ private fun SlidingDockTab(
         label = "tab_icon_pop"
     )
 
-    // Collapsed pad = 13dp -> 13 + 22 + 13 = 48dp exact circle matching InnerPillHeight
     val expandFraction = (1f - collapseProgress).coerceAtLeast(0f)
     val horizontalPad = lerp(13f, 18f, expandFraction).coerceAtLeast(0f).dp
     val iconTextGap = (8f * expandFraction).coerceAtLeast(0f).dp
@@ -1023,7 +1019,6 @@ private fun SlidingDockTab(
                 }
         )
 
-        // Synchronized clip + fade keeps text tucked cleanly with zero empty blank void
         Layout(
             modifier = Modifier
                 .padding(start = iconTextGap)
@@ -1054,8 +1049,10 @@ private fun SlidingDockTab(
 
 @Composable
 private fun SelectionDockContent(
+    isTrashMode: Boolean,
     onShare: () -> Unit,
     onAddToAlbum: () -> Unit,
+    onRestore: () -> Unit,
     onDelete: () -> Unit
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -1064,44 +1061,69 @@ private fun SelectionDockContent(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ConnectedActionPill(
-            icon = Icons.Default.Share,
-            label = null,
-            contentDescription = "Share selected",
-            containerColor = scheme.surfaceContainerHighest,
-            contentColor = scheme.onSurface,
-            outerStartRadius = 24.dp,
-            outerEndRadius = 10.dp,
-            onClick = onShare
-        )
-        ConnectedActionPill(
-            icon = Icons.Default.Add,
-            label = "Add to",
-            contentDescription = "Add selected to album",
-            containerColor = scheme.secondaryContainer,
-            contentColor = scheme.onSecondaryContainer,
-            outerStartRadius = 10.dp,
-            outerEndRadius = 10.dp,
-            onClick = onAddToAlbum
-        )
-        ConnectedActionPill(
-            icon = Icons.Default.Delete,
-            label = null,
-            contentDescription = "Delete selected",
-            containerColor = scheme.errorContainer.copy(alpha = 0.72f),
-            contentColor = scheme.onErrorContainer,
-            outerStartRadius = 10.dp,
-            outerEndRadius = 24.dp,
-            onClick = onDelete
-        )
+        if (isTrashMode) {
+            ConnectedActionPill(
+                icon = Icons.Default.RestoreFromTrash,
+                label = "Restore",
+                contentDescription = "Restore selected",
+                containerColor = scheme.secondaryContainer,
+                contentColor = scheme.onSecondaryContainer,
+                outerStartRadius = 24.dp,
+                outerEndRadius = 10.dp,
+                onClick = onRestore
+            )
+            ConnectedActionPill(
+                icon = Icons.Default.DeleteForever,
+                label = "Delete",
+                contentDescription = "Delete permanently",
+                containerColor = scheme.errorContainer.copy(alpha = 0.78f),
+                contentColor = scheme.onErrorContainer,
+                outerStartRadius = 10.dp,
+                outerEndRadius = 24.dp,
+                onClick = onDelete
+            )
+        } else {
+            ConnectedActionPill(
+                icon = Icons.Default.Share,
+                label = null,
+                contentDescription = "Share selected",
+                containerColor = scheme.surfaceContainerHighest,
+                contentColor = scheme.onSurface,
+                outerStartRadius = 24.dp,
+                outerEndRadius = 10.dp,
+                onClick = onShare
+            )
+            ConnectedActionPill(
+                icon = Icons.Default.Add,
+                label = "Add to",
+                contentDescription = "Add selected to album",
+                containerColor = scheme.secondaryContainer,
+                contentColor = scheme.onSecondaryContainer,
+                outerStartRadius = 10.dp,
+                outerEndRadius = 10.dp,
+                onClick = onAddToAlbum
+            )
+            ConnectedActionPill(
+                icon = Icons.Default.Delete,
+                label = null,
+                contentDescription = "Delete selected",
+                containerColor = scheme.errorContainer.copy(alpha = 0.72f),
+                contentColor = scheme.onErrorContainer,
+                outerStartRadius = 10.dp,
+                outerEndRadius = 24.dp,
+                onClick = onDelete
+            )
+        }
     }
 }
 
 @Composable
 private fun ViewerDockContent(
     medium: Medium,
+    isTrashMode: Boolean,
     darkScheme: ColorScheme,
     onAddToAlbumClick: () -> Unit,
+    onRestoreClick: () -> Unit,
     onDeleteClick: () -> Unit,
     context: Context
 ) {
@@ -1110,42 +1132,65 @@ private fun ViewerDockContent(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ConnectedActionPill(
-            icon = Icons.Default.Edit,
-            label = null,
-            contentDescription = "Edit",
-            containerColor = darkScheme.surfaceContainerHighest,
-            contentColor = darkScheme.onSurface,
-            outerStartRadius = 24.dp,
-            outerEndRadius = 10.dp,
-            onClick = {
-                val editIntent = Intent(Intent.ACTION_EDIT).apply {
-                    setDataAndType(medium.uri, medium.mimeType)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        if (isTrashMode) {
+            ConnectedActionPill(
+                icon = Icons.Default.RestoreFromTrash,
+                label = "Restore",
+                contentDescription = "Restore from trash",
+                containerColor = darkScheme.secondaryContainer,
+                contentColor = darkScheme.onSecondaryContainer,
+                outerStartRadius = 24.dp,
+                outerEndRadius = 10.dp,
+                onClick = onRestoreClick
+            )
+            ConnectedActionPill(
+                icon = Icons.Default.DeleteForever,
+                label = "Delete",
+                contentDescription = "Delete permanently",
+                containerColor = darkScheme.errorContainer.copy(alpha = 0.65f),
+                contentColor = darkScheme.onErrorContainer,
+                outerStartRadius = 10.dp,
+                outerEndRadius = 24.dp,
+                onClick = onDeleteClick
+            )
+        } else {
+            ConnectedActionPill(
+                icon = Icons.Default.Edit,
+                label = null,
+                contentDescription = "Edit",
+                containerColor = darkScheme.surfaceContainerHighest,
+                contentColor = darkScheme.onSurface,
+                outerStartRadius = 24.dp,
+                outerEndRadius = 10.dp,
+                onClick = {
+                    val editIntent = Intent(Intent.ACTION_EDIT).apply {
+                        setDataAndType(medium.uri, medium.mimeType)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(editIntent, "Edit with"))
                 }
-                context.startActivity(Intent.createChooser(editIntent, "Edit with"))
-            }
-        )
-        ConnectedActionPill(
-            icon = Icons.Default.Add,
-            label = "Add to",
-            contentDescription = "Add to album",
-            containerColor = darkScheme.secondaryContainer,
-            contentColor = darkScheme.onSecondaryContainer,
-            outerStartRadius = 10.dp,
-            outerEndRadius = 10.dp,
-            onClick = onAddToAlbumClick
-        )
-        ConnectedActionPill(
-            icon = Icons.Default.Delete,
-            label = null,
-            contentDescription = "Delete",
-            containerColor = darkScheme.errorContainer.copy(alpha = 0.55f),
-            contentColor = darkScheme.onErrorContainer,
-            outerStartRadius = 10.dp,
-            outerEndRadius = 24.dp,
-            onClick = onDeleteClick
-        )
+            )
+            ConnectedActionPill(
+                icon = Icons.Default.Add,
+                label = "Add to",
+                contentDescription = "Add to album",
+                containerColor = darkScheme.secondaryContainer,
+                contentColor = darkScheme.onSecondaryContainer,
+                outerStartRadius = 10.dp,
+                outerEndRadius = 10.dp,
+                onClick = onAddToAlbumClick
+            )
+            ConnectedActionPill(
+                icon = Icons.Default.Delete,
+                label = null,
+                contentDescription = "Delete",
+                containerColor = darkScheme.errorContainer.copy(alpha = 0.55f),
+                contentColor = darkScheme.onErrorContainer,
+                outerStartRadius = 10.dp,
+                outerEndRadius = 24.dp,
+                onClick = onDeleteClick
+            )
+        }
     }
 }
 

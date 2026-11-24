@@ -4,7 +4,9 @@ import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
 import android.database.ContentObserver
+import android.database.Cursor
 import android.net.Uri
+import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
@@ -85,6 +87,15 @@ class LuminaMediaRepository(context: Context) {
         )
     }.flowOn(Dispatchers.IO)
 
+    val trashedMediaFlow: Flow<List<Medium>> = flow {
+        emit(queryTrashedMedia())
+        emitAll(
+            observerTicks
+                .debounce(250)
+                .map { queryTrashedMedia() }
+        )
+    }.flowOn(Dispatchers.IO)
+
     suspend fun queryAllMedia(): List<Medium> = withContext(Dispatchers.IO) {
         val mediaList = mutableListOf<Medium>()
         val queryUri = MediaStore.Files.getContentUri("external")
@@ -97,77 +108,113 @@ class LuminaMediaRepository(context: Context) {
 
         try {
             contentResolver.query(queryUri, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
-                val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
-                val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.WIDTH)
-                val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.HEIGHT)
-                val orientCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.ORIENTATION)
-                val durationCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DURATION)
-                val takenCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_TAKEN)
-                val modCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
-                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
-                val bucketIdCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_ID)
-                val bucketNameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME)
-                val pathCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.RELATIVE_PATH)
-                val typeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
-                val favCol = cursor.getColumnIndex(MediaStore.MediaColumns.IS_FAVORITE)
-
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idCol)
-                    val mediaType = cursor.getInt(typeCol)
-                    val isVideo = mediaType == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
-                    val contentBase = if (isVideo) {
-                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                    } else {
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                    }
-                    val uri = Uri.withAppendedPath(contentBase, id.toString())
-
-                    val name = cursor.getString(nameCol) ?: ""
-                    val mime = cursor.getString(mimeCol) ?: if (isVideo) "video/*" else "image/*"
-                    val width = cursor.getInt(widthCol)
-                    val height = cursor.getInt(heightCol)
-                    val orientation = cursor.getInt(orientCol)
-                    val duration = cursor.getLong(durationCol)
-                    val dateTaken = cursor.getLong(takenCol)
-                    val dateModified = cursor.getLong(modCol) * 1000L
-                    val size = cursor.getLong(sizeCol)
-                    val bucketId = cursor.getLong(bucketIdCol)
-                    val bucketName = cursor.getString(bucketNameCol) ?: "Internal Storage"
-                    val relativePath = cursor.getString(pathCol) ?: ""
-                    val isFavorite = if (favCol != -1) cursor.getInt(favCol) == 1 else false
-                    val isAnimated = mime.contains("gif", ignoreCase = true) ||
-                        mime.contains("webp", ignoreCase = true) ||
-                        mime.contains("apng", ignoreCase = true)
-
-                    mediaList.add(
-                        Medium(
-                            id = id,
-                            uri = uri,
-                            displayName = name,
-                            mimeType = mime,
-                            width = width,
-                            height = height,
-                            orientation = orientation,
-                            durationMs = duration,
-                            dateTakenMs = if (dateTaken > 0) dateTaken else dateModified,
-                            dateModifiedMs = dateModified,
-                            sizeBytes = size,
-                            bucketId = bucketId,
-                            bucketName = bucketName,
-                            relativePath = relativePath,
-                            isFavorite = isFavorite,
-                            isVideo = isVideo,
-                            isAnimated = isAnimated
-                        )
-                    )
-                }
+                parseCursorToMedia(cursor, mediaList)
             }
         } catch (_: Exception) {
         }
 
         mediaList
+    }
+
+    suspend fun queryTrashedMedia(): List<Medium> = withContext(Dispatchers.IO) {
+        val mediaList = mutableListOf<Medium>()
+        val queryUri = MediaStore.Files.getContentUri("external")
+        val bundle = Bundle().apply {
+            putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_ONLY)
+            putString(
+                ContentResolver.QUERY_ARG_SQL_SELECTION,
+                "(${MediaStore.Files.FileColumns.MEDIA_TYPE} = ? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE} = ?)"
+            )
+            putStringArray(
+                ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
+                arrayOf(
+                    MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
+                    MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()
+                )
+            )
+            putString(
+                ContentResolver.QUERY_ARG_SQL_SORT_ORDER,
+                "${MediaStore.Files.FileColumns.DATE_TAKEN} DESC, ${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
+            )
+        }
+
+        try {
+            contentResolver.query(queryUri, projection, bundle, null)?.use { cursor ->
+                parseCursorToMedia(cursor, mediaList)
+            }
+        } catch (_: Exception) {
+        }
+
+        mediaList
+    }
+
+    private fun parseCursorToMedia(cursor: Cursor, mediaList: MutableList<Medium>) {
+        val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+        val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+        val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
+        val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.WIDTH)
+        val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.HEIGHT)
+        val orientCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.ORIENTATION)
+        val durationCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DURATION)
+        val takenCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_TAKEN)
+        val modCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
+        val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
+        val bucketIdCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_ID)
+        val bucketNameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME)
+        val pathCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.RELATIVE_PATH)
+        val typeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
+        val favCol = cursor.getColumnIndex(MediaStore.MediaColumns.IS_FAVORITE)
+
+        while (cursor.moveToNext()) {
+            val id = cursor.getLong(idCol)
+            val mediaType = cursor.getInt(typeCol)
+            val isVideo = mediaType == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
+            val contentBase = if (isVideo) {
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            } else {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+            val uri = Uri.withAppendedPath(contentBase, id.toString())
+
+            val name = cursor.getString(nameCol) ?: ""
+            val mime = cursor.getString(mimeCol) ?: if (isVideo) "video/*" else "image/*"
+            val width = cursor.getInt(widthCol)
+            val height = cursor.getInt(heightCol)
+            val orientation = cursor.getInt(orientCol)
+            val duration = cursor.getLong(durationCol)
+            val dateTaken = cursor.getLong(takenCol)
+            val dateModified = cursor.getLong(modCol) * 1000L
+            val size = cursor.getLong(sizeCol)
+            val bucketId = cursor.getLong(bucketIdCol)
+            val bucketName = cursor.getString(bucketNameCol) ?: "Internal Storage"
+            val relativePath = cursor.getString(pathCol) ?: ""
+            val isFavorite = if (favCol != -1) cursor.getInt(favCol) == 1 else false
+            val isAnimated = mime.contains("gif", ignoreCase = true) ||
+                mime.contains("webp", ignoreCase = true) ||
+                mime.contains("apng", ignoreCase = true)
+
+            mediaList.add(
+                Medium(
+                    id = id,
+                    uri = uri,
+                    displayName = name,
+                    mimeType = mime,
+                    width = width,
+                    height = height,
+                    orientation = orientation,
+                    durationMs = duration,
+                    dateTakenMs = if (dateTaken > 0) dateTaken else dateModified,
+                    dateModifiedMs = dateModified,
+                    sizeBytes = size,
+                    bucketId = bucketId,
+                    bucketName = bucketName,
+                    relativePath = relativePath,
+                    isFavorite = isFavorite,
+                    isVideo = isVideo,
+                    isAnimated = isAnimated
+                )
+            )
+        }
     }
 
     fun extractDirectories(media: List<Medium>): List<Directory> {

@@ -67,6 +67,7 @@ fun LuminaApp(
     val viewerState by viewerViewModel.uiState.collectAsStateWithLifecycle()
 
     val photosGridState = rememberLazyGridState()
+    val albumsGridState = rememberLazyGridState()
     val albumGridState = rememberLazyGridState()
     val dockScrollState = rememberDockScrollState()
 
@@ -77,6 +78,7 @@ fun LuminaApp(
     var isViewerClosing by remember { mutableStateOf(false) }
     var isVideoActionDockVisible by remember { mutableStateOf(true) }
     var viewerOpenedFromAlbum by remember { mutableStateOf(false) }
+    var viewerOpenedFromTrash by remember { mutableStateOf(false) }
     var viewerInitialIndex by remember { mutableIntStateOf(0) }
     var currentViewerPage by remember { mutableIntStateOf(0) }
     var viewerSourceRect by remember { mutableStateOf<Rect?>(null) }
@@ -92,7 +94,7 @@ fun LuminaApp(
 
     val viewerMedia = when {
         useUnfilteredViewerMedia -> galleryState.allMedia
-        viewerOpenedFromAlbum && galleryState.albumMedia.isNotEmpty() -> galleryState.albumMedia
+        viewerOpenedFromAlbum -> galleryState.albumMedia
         galleryState.visibleMedia.isNotEmpty() -> galleryState.visibleMedia
         else -> galleryState.allMedia
     }
@@ -103,6 +105,7 @@ fun LuminaApp(
             val resolved = if (foundIdx != -1) foundIdx else 0
             useUnfilteredViewerMedia = true
             viewerOpenedFromAlbum = false
+            viewerOpenedFromTrash = false
             viewerSourceRect = null
             viewerInitialIndex = resolved
             currentViewerPage = resolved
@@ -124,7 +127,11 @@ fun LuminaApp(
         if (!isViewerOpen) dockScrollState.expand()
     }
 
-    val activeScrollGridState = if (galleryState.activeAlbumId != null) albumGridState else photosGridState
+    val activeScrollGridState = when {
+        galleryState.activeAlbumId != null -> albumGridState
+        galleryState.selectedTab == GalleryTab.ALBUMS -> albumsGridState
+        else -> photosGridState
+    }
     val showScrollToTop by remember(activeScrollGridState, galleryState.selectedTab, galleryState.activeAlbumId) {
         derivedStateOf {
             val isGridVisible = galleryState.activeAlbumId != null || galleryState.selectedTab == GalleryTab.PHOTOS
@@ -139,6 +146,7 @@ fun LuminaApp(
             LuminaHomeScreen(
                 viewModel = galleryViewModel,
                 photosGridState = photosGridState,
+                albumsGridState = albumsGridState,
                 albumGridState = albumGridState,
                 dockScrollState = dockScrollState,
                 onPhotosGridRootOffsetChange = { photosGridRootOffset = it },
@@ -153,7 +161,7 @@ fun LuminaApp(
                         .map { it.uri }
                     onMediaPicked(picked)
                 },
-                onMediaClick = { medium, fromAlbum ->
+                onMediaClick = { medium, fromAlbum, fromTrash ->
                     if (pickerMode) {
                         if (allowMultiple) galleryViewModel.toggleSelection(medium.id)
                         else onMediaPicked(listOf(medium.uri))
@@ -167,10 +175,12 @@ fun LuminaApp(
                         val resolved = if (idx != -1) {
                             useUnfilteredViewerMedia = false
                             viewerOpenedFromAlbum = fromAlbum
+                            viewerOpenedFromTrash = fromTrash
                             idx
                         } else {
                             useUnfilteredViewerMedia = true
                             viewerOpenedFromAlbum = false
+                            viewerOpenedFromTrash = false
                             galleryState.allMedia.indexOfFirst { it.id == medium.id }.coerceAtLeast(0)
                         }
                         viewerSourceRect = sourceRect
@@ -225,6 +235,7 @@ fun LuminaApp(
                         isViewerOpen = false
                         isViewerClosing = false
                         isVideoActionDockVisible = true
+                        viewerOpenedFromTrash = false
                         viewerSourceRect = null
                         hiddenGridMediaId = null
                     },
@@ -236,12 +247,21 @@ fun LuminaApp(
             val dockMode: DockMode? = when {
                 dockInViewerMode && safeViewerMedium != null -> DockMode.Viewer(
                     medium = safeViewerMedium,
+                    isTrashMode = viewerOpenedFromTrash,
                     onAddToAlbumClick = { pendingAddToAlbumItems = listOf(safeViewerMedium) },
-                    onDeleteClick = { viewerViewModel.deleteCurrent(repository, safeViewerMedium) }
+                    onRestoreClick = { viewerViewModel.restoreCurrent(repository, safeViewerMedium) },
+                    onDeleteClick = {
+                        if (viewerOpenedFromTrash) {
+                            viewerViewModel.deletePermanently(repository, safeViewerMedium)
+                        } else {
+                            viewerViewModel.deleteCurrent(repository, safeViewerMedium)
+                        }
+                    }
                 )
 
                 !dockInViewerMode && galleryState.isMultiSelectMode && !pickerMode -> DockMode.Selection(
                     selectedCount = galleryState.selectedIds.size,
+                    isTrashMode = galleryState.isTrashOverlay,
                     onShare = {
                         val selectedMedia = galleryState.allMedia.filter { it.id in galleryState.selectedIds }
                         shareMediaItems(context, selectedMedia)
@@ -250,7 +270,14 @@ fun LuminaApp(
                         val selectedMedia = galleryState.allMedia.filter { it.id in galleryState.selectedIds }
                         if (selectedMedia.isNotEmpty()) pendingAddToAlbumItems = selectedMedia
                     },
-                    onDelete = { galleryViewModel.trashSelected(true) }
+                    onRestore = { galleryViewModel.restoreSelected() },
+                    onDelete = {
+                        if (galleryState.isTrashOverlay) {
+                            galleryViewModel.deleteSelectedPermanently()
+                        } else {
+                            galleryViewModel.trashSelected(true)
+                        }
+                    }
                 )
 
                 !dockInViewerMode -> DockMode.Home(

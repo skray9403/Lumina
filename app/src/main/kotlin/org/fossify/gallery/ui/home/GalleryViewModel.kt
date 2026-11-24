@@ -54,6 +54,9 @@ data class GalleryUiState(
     val albumMedia: List<Medium> = emptyList(),
     val albumIndexToDatePill: List<String> = emptyList(),
     val albumMediaIdToGridIndex: Map<Long, Int> = emptyMap(),
+    val favoriteCount: Int = 0,
+    val trashedMedia: List<Medium> = emptyList(),
+    val isTrashOverlay: Boolean = false,
     val isSearchActive: Boolean = false
 )
 
@@ -77,9 +80,15 @@ private data class FlatFeedProjection(
 )
 
 class GalleryViewModel(application: Application) : AndroidViewModel(application) {
+    companion object {
+        const val FAVORITES_BUCKET_ID = -1001L
+        const val TRASH_BUCKET_ID = -1002L
+    }
+
     val repository = LuminaMediaRepository(application)
 
     private val rawMedia = MutableStateFlow<List<Medium>>(emptyList())
+    private val rawTrashed = MutableStateFlow<List<Medium>>(emptyList())
     private val inputs = MutableStateFlow(FilterInputs())
 
     init {
@@ -88,9 +97,14 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 rawMedia.value = media
             }
         }
+        viewModelScope.launch {
+            repository.trashedMediaFlow.collect { trashed ->
+                rawTrashed.value = trashed
+            }
+        }
     }
 
-    val uiState: StateFlow<GalleryUiState> = combine(rawMedia, inputs) { media, inp ->
+    val uiState: StateFlow<GalleryUiState> = combine(rawMedia, rawTrashed, inputs) { media, trashed, inp ->
         val mimeFiltered = when {
             inp.pickerMimeType == null || inp.pickerMimeType == "*/*" -> media
             inp.pickerMimeType.startsWith("image/") -> media.filter { !it.isVideo }
@@ -99,27 +113,29 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
 
         val albums = repository.extractDirectories(mimeFiltered)
+        val favoriteCount = mimeFiltered.count { it.isFavorite }
 
-        // Main Photos feed projection (with search query if active and not inside an album)
         val mainFiltered = applySearch(
             media = mimeFiltered,
             query = if (inp.activeAlbumId == null) inp.searchQuery else ""
         )
         val mainProj = buildFlatProjection(mainFiltered)
 
-        // Stacked Album overlay projection (filtered by bucket + search query)
-        val albumFiltered = if (inp.activeAlbumId != null) {
-            applySearch(
-                media = mimeFiltered.filter { it.bucketId == inp.activeAlbumId },
-                query = inp.searchQuery
-            )
-        } else {
-            emptyList()
+        val isTrashOverlay = inp.activeAlbumId == TRASH_BUCKET_ID
+        val albumFiltered = when (inp.activeAlbumId) {
+            null -> emptyList()
+            FAVORITES_BUCKET_ID -> applySearch(mimeFiltered.filter { it.isFavorite }, inp.searchQuery)
+            TRASH_BUCKET_ID -> applySearch(trashed, inp.searchQuery)
+            else -> applySearch(mimeFiltered.filter { it.bucketId == inp.activeAlbumId }, inp.searchQuery)
         }
         val albumProj = buildFlatProjection(albumFiltered)
 
-        val resolvedAlbumName = inp.activeAlbumName
-            ?: inp.activeAlbumId?.let { id -> albums.firstOrNull { it.bucketId == id }?.name }
+        val resolvedAlbumName = when (inp.activeAlbumId) {
+            FAVORITES_BUCKET_ID -> "Favorites"
+            TRASH_BUCKET_ID -> "Trash"
+            else -> inp.activeAlbumName
+                ?: inp.activeAlbumId?.let { id -> albums.firstOrNull { it.bucketId == id }?.name }
+        }
 
         GalleryUiState(
             allMedia = media,
@@ -139,6 +155,9 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             albumMedia = albumProj.items,
             albumIndexToDatePill = albumProj.indexToPill,
             albumMediaIdToGridIndex = albumProj.idToIndex,
+            favoriteCount = favoriteCount,
+            trashedMedia = trashed,
+            isTrashOverlay = isTrashOverlay,
             isSearchActive = inp.isSearchActive
         )
     }
@@ -156,6 +175,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     fun refresh() {
         viewModelScope.launch {
             rawMedia.value = repository.queryAllMedia()
+            rawTrashed.value = repository.queryTrashedMedia()
         }
     }
 
@@ -175,7 +195,32 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 activeAlbumId = album.bucketId,
                 activeAlbumName = album.name,
                 searchQuery = "",
-                isSearchActive = false
+                isSearchActive = false,
+                selectedIds = emptySet()
+            )
+        }
+    }
+
+    fun openFavorites() {
+        inputs.update {
+            it.copy(
+                activeAlbumId = FAVORITES_BUCKET_ID,
+                activeAlbumName = "Favorites",
+                searchQuery = "",
+                isSearchActive = false,
+                selectedIds = emptySet()
+            )
+        }
+    }
+
+    fun openTrash() {
+        inputs.update {
+            it.copy(
+                activeAlbumId = TRASH_BUCKET_ID,
+                activeAlbumName = "Trash",
+                searchQuery = "",
+                isSearchActive = false,
+                selectedIds = emptySet()
             )
         }
     }
@@ -186,12 +231,12 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 activeAlbumId = null,
                 activeAlbumName = null,
                 searchQuery = "",
-                isSearchActive = false
+                isSearchActive = false,
+                selectedIds = emptySet()
             )
         }
     }
 
-    /** Preserved for compatibility with existing callers/tests. */
     fun filterByAlbum(bucketId: Long?) {
         if (bucketId == null) {
             closeAlbum()
@@ -256,27 +301,34 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun deleteSelected() {
+    private fun selectedUrisFromActiveSource(): List<android.net.Uri> {
         val state = uiState.value
-        val uris = state.allMedia.filter { it.id in state.selectedIds }.map { it.uri }
+        val source = if (state.isTrashOverlay) state.trashedMedia else state.allMedia
+        return source.filter { it.id in state.selectedIds }.map { it.uri }
+    }
+
+    fun deleteSelected() {
+        val uris = selectedUrisFromActiveSource()
         if (uris.isNotEmpty()) {
             val req = repository.createDeleteRequest(uris)
             inputs.update { it.copy(pendingIntentRequest = req) }
         }
     }
 
+    fun deleteSelectedPermanently() = deleteSelected()
+
     fun trashSelected(isTrash: Boolean = true) {
-        val state = uiState.value
-        val uris = state.allMedia.filter { it.id in state.selectedIds }.map { it.uri }
+        val uris = selectedUrisFromActiveSource()
         if (uris.isNotEmpty()) {
             val req = repository.createTrashRequest(uris, isTrash)
             inputs.update { it.copy(pendingIntentRequest = req) }
         }
     }
 
+    fun restoreSelected() = trashSelected(isTrash = false)
+
     fun favoriteSelected(isFavorite: Boolean) {
-        val state = uiState.value
-        val uris = state.allMedia.filter { it.id in state.selectedIds }.map { it.uri }
+        val uris = selectedUrisFromActiveSource()
         if (uris.isNotEmpty()) {
             val req = repository.createFavoriteRequest(uris, isFavorite)
             inputs.update { it.copy(pendingIntentRequest = req) }
@@ -302,7 +354,9 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
 
         val zone = ZoneId.systemDefault()
-        val currentYear = LocalDate.now(zone).year
+        val today = LocalDate.now(zone)
+        val yesterday = today.minusDays(1)
+        val currentYear = today.year
         val locale = Locale.getDefault()
         val fmtSameYear = DateTimeFormatter.ofPattern("EEE, d MMM", locale)
         val fmtOtherYear = DateTimeFormatter.ofPattern("EEE, d MMM yyyy", locale)
@@ -320,10 +374,11 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 lastLabel
             } else {
                 lastDay = day
-                val formatted = if (day.year == currentYear) {
-                    day.format(fmtSameYear)
-                } else {
-                    day.format(fmtOtherYear)
+                val formatted = when {
+                    day == today -> "Today"
+                    day == yesterday -> "Yesterday"
+                    day.year == currentYear -> day.format(fmtSameYear)
+                    else -> day.format(fmtOtherYear)
                 }
                 lastLabel = formatted
                 formatted

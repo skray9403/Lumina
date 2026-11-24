@@ -63,6 +63,16 @@ class ViewerViewModel : ViewModel() {
         _uiState.update { it.copy(pendingIntentRequest = req) }
     }
 
+    fun restoreCurrent(repository: LuminaMediaRepository, medium: Medium) {
+        val req = repository.createTrashRequest(listOf(medium.uri), false)
+        _uiState.update { it.copy(pendingIntentRequest = req) }
+    }
+
+    fun deletePermanently(repository: LuminaMediaRepository, medium: Medium) {
+        val req = repository.createDeleteRequest(listOf(medium.uri))
+        _uiState.update { it.copy(pendingIntentRequest = req) }
+    }
+
     fun clearPendingIntentRequest() {
         _uiState.update { it.copy(pendingIntentRequest = null) }
     }

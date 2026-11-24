@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.calculateEndPadding
@@ -16,10 +17,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -29,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
@@ -45,25 +56,62 @@ import org.fossify.gallery.ui.theme.pressScale
 @Composable
 fun AlbumsGrid(
     albums: List<Directory>,
+    favoriteCount: Int,
+    trashedCount: Int,
+    onFavoritesClick: () -> Unit,
+    onTrashClick: () -> Unit,
     onAlbumClick: (Directory) -> Unit,
     modifier: Modifier = Modifier,
+    gridState: LazyGridState = rememberLazyGridState(),
     contentPadding: PaddingValues = PaddingValues(0.dp)
 ) {
     val layoutDirection = LocalLayoutDirection.current
     val mergedPadding = PaddingValues(
         start = contentPadding.calculateStartPadding(layoutDirection) + 16.dp,
         end = contentPadding.calculateEndPadding(layoutDirection) + 16.dp,
-        top = contentPadding.calculateTopPadding() + 8.dp,
+        top = contentPadding.calculateTopPadding() + 6.dp,
         bottom = contentPadding.calculateBottomPadding() + 8.dp
     )
 
     LazyVerticalGrid(
+        state = gridState,
         columns = GridCells.Fixed(2),
         modifier = modifier.fillMaxSize(),
         contentPadding = mergedPadding,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Smart Albums row: Favorites & Trash
+        item(
+            key = "smart_albums_row",
+            span = { GridItemSpan(maxLineSpan) },
+            contentType = "smart_albums"
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                SmartAlbumTile(
+                    title = "Favorites",
+                    count = favoriteCount,
+                    icon = Icons.Default.Favorite,
+                    badgeBg = MaterialTheme.colorScheme.primaryContainer,
+                    badgeTint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    onClick = onFavoritesClick,
+                    modifier = Modifier.weight(1f)
+                )
+                SmartAlbumTile(
+                    title = "Trash",
+                    count = trashedCount,
+                    icon = Icons.Default.DeleteOutline,
+                    badgeBg = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f),
+                    badgeTint = MaterialTheme.colorScheme.onErrorContainer,
+                    onClick = onTrashClick,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
         items(
             items = albums,
             key = { it.bucketId },
@@ -72,6 +120,65 @@ fun AlbumsGrid(
             AlbumCard(
                 album = album,
                 onClick = { onAlbumClick(album) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SmartAlbumTile(
+    title: String,
+    count: Int,
+    icon: ImageVector,
+    badgeBg: Color,
+    badgeTint: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    Row(
+        modifier = modifier
+            .pressScale(interactionSource, pressedScale = 0.96f)
+            .clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(bounded = true),
+                role = Role.Button,
+                onClick = onClick
+            )
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(badgeBg),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = title,
+                tint = badgeTint,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "$count",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
             )
         }
     }

@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
@@ -54,70 +55,45 @@ fun rememberLuminaPillTokens(
         )
     } else {
         LuminaPillTokens(
-            containerColor = scheme.surfaceContainerLowest.copy(alpha = 0.97f),
+            containerColor = scheme.surfaceContainerLowest.copy(alpha = 0.98f),
             contentColor = scheme.onSurface,
             secondaryContentColor = scheme.onSurfaceVariant,
-            border = BorderStroke(0.75.dp, scheme.outlineVariant.copy(alpha = 0.28f)),
+            border = BorderStroke(0.75.dp, scheme.outlineVariant.copy(alpha = 0.30f)),
             shadowElevation = 3.dp
         )
     }
 }
 
 /**
- * Status-bar-aware smooth feather scrim.
- * Anchors high opacity across the status bar + upper half of the floating date pill so row 1's
- * top edge melts seamlessly into the background with zero harsh cutoff, then feathers past the pill.
+ * Tight Google Photos-style status-bar-only feather halo.
+ * Protects status bar clock/battery icons during scrolling while ending strictly ABOVE
+ * the floating date pill & overflow button so photos behind the pills stay 100% sharp.
  */
 @Composable
-fun TopEdgeFeatherFade(
+fun StatusBarFeatherHalo(
+    statusBarHeight: Dp,
+    alpha: () -> Float,
     modifier: Modifier = Modifier,
-    statusBarHeight: Dp = 0.dp,
-    height: Dp = statusBarHeight + 96.dp,
     surfaceColor: Color = MaterialTheme.colorScheme.background
 ) {
+    val totalHeight = (statusBarHeight + 18.dp).coerceAtLeast(24.dp)
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(height)
+            .height(totalHeight)
+            .graphicsLayer {
+                this.alpha = alpha().coerceIn(0f, 1f)
+            }
             .drawWithCache {
                 val h = size.height.coerceAtLeast(1f)
-                val sb = statusBarHeight.toPx()
-                val s0 = ((sb + 8.dp.toPx()) / h).coerceIn(0.05f, 0.45f)
-                val s1 = ((sb + 30.dp.toPx()) / h).coerceIn(s0 + 0.05f, 0.65f)
-                val s2 = ((sb + 52.dp.toPx()) / h).coerceIn(s1 + 0.05f, 0.80f)
-                val s3 = ((sb + 74.dp.toPx()) / h).coerceIn(s2 + 0.05f, 0.94f)
+                val sbEnd = (statusBarHeight.toPx() / h).coerceIn(0.40f, 0.80f)
+                val midFade = ((sbEnd + 1.0f) * 0.5f).coerceIn(sbEnd + 0.05f, 0.95f)
 
                 val brush = Brush.verticalGradient(
-                    0.0f to surfaceColor,
-                    s0 to surfaceColor.copy(alpha = 0.97f),
-                    s1 to surfaceColor.copy(alpha = 0.88f),
-                    s2 to surfaceColor.copy(alpha = 0.44f),
-                    s3 to surfaceColor.copy(alpha = 0.12f),
+                    0.0f to surfaceColor.copy(alpha = 0.90f),
+                    sbEnd to surfaceColor.copy(alpha = 0.68f),
+                    midFade to surfaceColor.copy(alpha = 0.24f),
                     1.0f to Color.Transparent
-                )
-                onDrawBehind {
-                    drawRect(brush = brush)
-                }
-            }
-    )
-}
-
-@Composable
-fun BottomEdgeFeatherFade(
-    modifier: Modifier = Modifier,
-    height: Dp = 112.dp,
-    surfaceColor: Color = MaterialTheme.colorScheme.background
-) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(height)
-            .drawWithCache {
-                val brush = Brush.verticalGradient(
-                    0.0f to Color.Transparent,
-                    0.35f to surfaceColor.copy(alpha = 0.36f),
-                    0.75f to surfaceColor.copy(alpha = 0.84f),
-                    1.0f to surfaceColor.copy(alpha = 0.98f)
                 )
                 onDrawBehind {
                     drawRect(brush = brush)
