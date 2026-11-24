@@ -11,20 +11,18 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import org.fossify.gallery.engine.share.RecentShareStore
+import org.fossify.gallery.engine.vault.VaultManager
 
-/**
- * Compose entry point for Lumina and Android's image/video picker intents.
- *
- * Lumina: modern, expressive Jetpack Compose gallery application.
- * The old media activities remain as compatibility services while their
- * behavior is migrated; normal launch and picker flows now enter Compose.
- */
 class LuminaActivity : ComponentActivity() {
     private var launchRequest by mutableStateOf(LuminaLaunchRequest())
     private var launchRevision = 0
+    private var upnpRequestId by mutableStateOf<Long?>(null)
+    private var upnpRequestRevision by mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        VaultManager.init(this)
         enableEdgeToEdge()
         updateLaunchRequest(intent)
 
@@ -37,6 +35,8 @@ class LuminaActivity : ComponentActivity() {
                 initialUri = request.initialUri,
                 launchRevision = request.revision,
                 initialTab = request.initialTab,
+                upnpCastMediaId = upnpRequestId,
+                upnpCastRevision = upnpRequestRevision,
                 onMediaPicked = { uris ->
                     if (uris.isNotEmpty()) {
                         val resultIntent = Intent().apply {
@@ -70,9 +70,26 @@ class LuminaActivity : ComponentActivity() {
         updateLaunchRequest(intent)
     }
 
+    override fun onStop() {
+        super.onStop()
+        // Zeroize in-memory vault DEK whenever Lumina leaves the foreground
+        if (!isChangingConfigurations) {
+            VaultManager.lock()
+        }
+    }
+
     private fun updateLaunchRequest(intent: Intent?) {
-        launchRevision += 1
         val action = intent?.action
+        if (action == RecentShareStore.ACTION_UPNP_CAST) {
+            val mediaId = intent.getLongExtra(RecentShareStore.EXTRA_UPNP_MEDIA_ID, -1L)
+            if (mediaId != -1L) {
+                upnpRequestId = mediaId
+                upnpRequestRevision += 1
+            }
+            return
+        }
+
+        launchRevision += 1
         val pickerMode = action == Intent.ACTION_PICK || action == Intent.ACTION_GET_CONTENT
         launchRequest = LuminaLaunchRequest(
             pickerMode = pickerMode,

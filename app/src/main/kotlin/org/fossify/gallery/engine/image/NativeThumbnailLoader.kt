@@ -20,6 +20,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import org.fossify.gallery.engine.vault.VaultCrypto
+import org.fossify.gallery.engine.vault.VaultManager
 import org.fossify.gallery.models.Medium
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
@@ -46,6 +48,9 @@ object NativeThumbnailLoader {
     }
 
     fun getCached(medium: Medium, targetSizePx: Int = DEFAULT_THUMB_PX): ImageBitmap? {
+        if (medium.uri.scheme == VaultCrypto.VAULT_SCHEME) {
+            return VaultManager.getCachedThumbnail(medium.id)
+        }
         val key = ThumbnailKey(medium.id, targetSizePx, medium.dateModifiedMs)
         return cache.get(key)?.imageBitmap
     }
@@ -55,6 +60,10 @@ object NativeThumbnailLoader {
         medium: Medium,
         targetSizePx: Int = DEFAULT_THUMB_PX
     ): ImageBitmap? {
+        if (medium.uri.scheme == VaultCrypto.VAULT_SCHEME) {
+            return VaultManager.loadThumbnail(medium.id)
+        }
+
         val key = ThumbnailKey(medium.id, targetSizePx, medium.dateModifiedMs)
         cache.get(key)?.let { return it.imageBitmap }
 
@@ -87,16 +96,13 @@ object NativeThumbnailLoader {
         }
     }
 
-    /**
-     * Warms upcoming rows ahead of the viewport on a dedicated 2-thread IO pool
-     * without competing against currently visible tile loads.
-     */
     fun prefetch(
         contentResolver: ContentResolver,
         items: List<Medium>,
         targetSizePx: Int = DEFAULT_THUMB_PX
     ) {
         for (medium in items) {
+            if (medium.uri.scheme == VaultCrypto.VAULT_SCHEME) continue
             val key = ThumbnailKey(medium.id, targetSizePx, medium.dateModifiedMs)
             if (cache.get(key) != null) continue
             if (!inFlightPrefetch.add(key)) continue
@@ -132,11 +138,11 @@ fun rememberThumbnail(
     sizePx: Int = NativeThumbnailLoader.DEFAULT_THUMB_PX
 ): ImageBitmap? {
     val context = LocalContext.current
-    var bitmap by remember(medium.id, medium.dateModifiedMs, sizePx) {
+    var bitmap by remember(medium.id, medium.uri, medium.dateModifiedMs, sizePx) {
         mutableStateOf(NativeThumbnailLoader.getCached(medium, sizePx))
     }
 
-    LaunchedEffect(medium.id, medium.dateModifiedMs, sizePx) {
+    LaunchedEffect(medium.id, medium.uri, medium.dateModifiedMs, sizePx) {
         if (bitmap == null) {
             bitmap = NativeThumbnailLoader.loadThumbnail(context.contentResolver, medium, sizePx)
         }

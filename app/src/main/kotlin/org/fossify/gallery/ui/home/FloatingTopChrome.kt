@@ -66,15 +66,6 @@ private val TightSnapOverbounce = spring<Float>(
     stiffness = 820f
 )
 
-/**
- * Adaptive top chrome:
- * - On Home (alwaysFloating = false):
- *     • At scroll 0: clean header with "Lumina" (sans-serif) on left & circular ⋮ button on right.
- *     • On scroll: tight spring snap with slight overbounce into floating centered Date pill +
- *       floating ⋮ circle + status-bar-only feather halo.
- * - On Album / Smart Album overlays (alwaysFloating = true):
- *     • Always floating Back bubble + centered Album/Date pill + ⋮ bubble + status-bar halo.
- */
 @Composable
 fun FloatingTopChrome(
     gridState: LazyGridState?,
@@ -86,9 +77,14 @@ fun FloatingTopChrome(
     isMultiSelectMode: Boolean,
     selectedCount: Int,
     columnCount: Int,
+    mediaFilter: MediaFilter,
+    groupBy: MediaGroupBy,
+    allowFolderGrouping: Boolean,
     showConfirmPick: Boolean,
     onBackClick: (() -> Unit)? = null,
     onColumnCountChange: (Int) -> Unit,
+    onMediaFilterChange: (MediaFilter) -> Unit,
+    onGroupByChange: (MediaGroupBy) -> Unit,
     onRefresh: () -> Unit,
     onClearSelection: () -> Unit,
     onSelectAll: () -> Unit,
@@ -99,7 +95,6 @@ fun FloatingTopChrome(
     val tokens = rememberLuminaPillTokens()
     val scrollTriggerPx = with(density) { 10.dp.roundToPx() }
 
-    // Scoped derivedStateOf so scrolling across items never recomposes LuminaHomeScreen
     val isFloating by remember(gridState, alwaysFloating, scrollTriggerPx) {
         derivedStateOf {
             alwaysFloating || (
@@ -118,14 +113,12 @@ fun FloatingTopChrome(
     )
 
     Box(modifier = modifier.fillMaxWidth()) {
-        // 1. Status-bar-only feather halo (strictly visible once scrolled into floating form)
         StatusBarFeatherHalo(
             statusBarHeight = statusBarHeight,
             alpha = { floatingProgress },
             modifier = Modifier.align(Alignment.TopCenter)
         )
 
-        // 2. Chrome row pinned cleanly below status bar
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -159,9 +152,14 @@ fun FloatingTopChrome(
                         alwaysFloating = alwaysFloating,
                         floatingProgress = floatingProgress,
                         columnCount = columnCount,
+                        mediaFilter = mediaFilter,
+                        groupBy = groupBy,
+                        allowFolderGrouping = allowFolderGrouping,
                         tokens = tokens,
                         onBackClick = onBackClick,
                         onColumnCountChange = onColumnCountChange,
+                        onMediaFilterChange = onMediaFilterChange,
+                        onGroupByChange = onGroupByChange,
                         onRefresh = onRefresh
                     )
                 }
@@ -179,9 +177,14 @@ private fun MorphingHeaderAndPills(
     alwaysFloating: Boolean,
     floatingProgress: Float,
     columnCount: Int,
+    mediaFilter: MediaFilter,
+    groupBy: MediaGroupBy,
+    allowFolderGrouping: Boolean,
     tokens: LuminaPillTokens,
     onBackClick: (() -> Unit)?,
     onColumnCountChange: (Int) -> Unit,
+    onMediaFilterChange: (MediaFilter) -> Unit,
+    onGroupByChange: (MediaGroupBy) -> Unit,
     onRefresh: () -> Unit
 ) {
     val density = LocalDensity.current
@@ -191,6 +194,10 @@ private fun MorphingHeaderAndPills(
     val jumpOffsetPx = with(density) { 6.dp.toPx() }
     val titleExitOffsetPx = with(density) { 14.dp.toPx() }
     val pillDropPx = with(density) { 10.dp.toPx() }
+
+    val hasActiveFilterOrGroup = mediaFilter != MediaFilter.ALL || groupBy != MediaGroupBy.DATE
+    val menuBg = if (hasActiveFilterOrGroup) MaterialTheme.colorScheme.primaryContainer else tokens.containerColor
+    val menuFg = if (hasActiveFilterOrGroup) MaterialTheme.colorScheme.onPrimaryContainer else tokens.contentColor
 
     val menuShadow by animateDpAsState(
         targetValue = if (floatingProgress > 0.5f) tokens.shadowElevation + 3.dp else tokens.shadowElevation,
@@ -203,7 +210,6 @@ private fun MorphingHeaderAndPills(
             .fillMaxWidth()
             .height(52.dp)
     ) {
-        // Left slot: either Back button (in album overlay) OR scroll-0 "Lumina" sans-serif title
         if (onBackClick != null) {
             val backInteraction = remember { MutableInteractionSource() }
             Surface(
@@ -236,17 +242,23 @@ private fun MorphingHeaderAndPills(
                 }
             }
         } else if (!alwaysFloating && clamped < 0.98f) {
+            val displayHeader = when (mediaFilter) {
+                MediaFilter.PHOTOS -> "$headerTitle · Photos"
+                MediaFilter.VIDEOS -> "$headerTitle · Videos"
+                MediaFilter.ALL -> headerTitle
+            }
             Text(
-                text = headerTitle,
+                text = displayHeader,
                 fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 23.sp,
                 letterSpacing = (-0.4).sp,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(start = 4.dp)
+                    .padding(start = 4.dp, end = 56.dp)
                     .graphicsLayer {
                         alpha = (1f - clamped * 1.85f).coerceIn(0f, 1f)
                         translationY = -clamped * titleExitOffsetPx
@@ -254,7 +266,6 @@ private fun MorphingHeaderAndPills(
             )
         }
 
-        // Center slot: Floating Date Pill (snaps in with tight slight overbounce when scrolled)
         if (alwaysFloating || clamped > 0.02f) {
             StickyCenterDatePill(
                 gridState = gridState,
@@ -275,14 +286,12 @@ private fun MorphingHeaderAndPills(
             )
         }
 
-        // Right slot: Single persistent ⋮ circle that snaps tightly into floating position on scroll
         Box(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .graphicsLayer {
                     if (!alwaysFloating) {
                         translationY = floatingProgress * jumpOffsetPx
-                        // Subtle tactile pop during transition settles back to 1f
                         val pop = 1f + (1f - kotlin.math.abs(clamped * 2f - 1f)) * 0.06f
                         scaleX = pop
                         scaleY = pop
@@ -292,7 +301,7 @@ private fun MorphingHeaderAndPills(
             val menuInteraction = remember { MutableInteractionSource() }
             Surface(
                 shape = CircleShape,
-                color = tokens.containerColor,
+                color = menuBg,
                 border = tokens.border,
                 shadowElevation = menuShadow.coerceAtLeast(0.dp),
                 modifier = Modifier
@@ -313,7 +322,7 @@ private fun MorphingHeaderAndPills(
                     Icon(
                         imageVector = Icons.Default.MoreVert,
                         contentDescription = "Gallery options",
-                        tint = tokens.contentColor,
+                        tint = menuFg,
                         modifier = Modifier.size(21.dp)
                     )
                 }
@@ -329,9 +338,90 @@ private fun MorphingHeaderAndPills(
                 shadowElevation = 8.dp,
                 border = tokens.border
             ) {
+                // 1. Show: All | Photos | Videos
                 Column(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Show",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 2.dp)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        MenuSegmentChip(
+                            label = "All",
+                            selected = mediaFilter == MediaFilter.ALL,
+                            onClick = {
+                                onMediaFilterChange(MediaFilter.ALL)
+                                menuExpanded = false
+                            }
+                        )
+                        MenuSegmentChip(
+                            label = "Photos",
+                            selected = mediaFilter == MediaFilter.PHOTOS,
+                            onClick = {
+                                onMediaFilterChange(MediaFilter.PHOTOS)
+                                menuExpanded = false
+                            }
+                        )
+                        MenuSegmentChip(
+                            label = "Videos",
+                            selected = mediaFilter == MediaFilter.VIDEOS,
+                            onClick = {
+                                onMediaFilterChange(MediaFilter.VIDEOS)
+                                menuExpanded = false
+                            }
+                        )
+                    }
+                }
+
+                // 2. Group by: Date | Size | Folder
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Group by",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 2.dp)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        MenuSegmentChip(
+                            label = "Date",
+                            selected = groupBy == MediaGroupBy.DATE,
+                            onClick = {
+                                onGroupByChange(MediaGroupBy.DATE)
+                                menuExpanded = false
+                            }
+                        )
+                        MenuSegmentChip(
+                            label = "Size",
+                            selected = groupBy == MediaGroupBy.SIZE,
+                            onClick = {
+                                onGroupByChange(MediaGroupBy.SIZE)
+                                menuExpanded = false
+                            }
+                        )
+                        if (allowFolderGrouping) {
+                            MenuSegmentChip(
+                                label = "Folder",
+                                selected = groupBy == MediaGroupBy.FOLDER,
+                                onClick = {
+                                    onGroupByChange(MediaGroupBy.FOLDER)
+                                    menuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // 3. Grid columns: 2 | 3 | 4 | 5
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
                         text = "Grid columns",
@@ -347,7 +437,7 @@ private fun MorphingHeaderAndPills(
                             val selected = columnCount == cols
                             Box(
                                 modifier = Modifier
-                                    .size(38.dp)
+                                    .size(36.dp)
                                     .clip(CircleShape)
                                     .background(
                                         if (selected) MaterialTheme.colorScheme.primaryContainer
@@ -402,6 +492,36 @@ private fun MorphingHeaderAndPills(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun MenuSegmentChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.7f)
+            )
+            .clickable(role = Role.RadioButton, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            }
+        )
     }
 }
 

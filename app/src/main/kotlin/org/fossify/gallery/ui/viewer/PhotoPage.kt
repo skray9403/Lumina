@@ -25,6 +25,8 @@ import org.fossify.gallery.engine.image.NativeAnimatedCanvas
 import org.fossify.gallery.engine.image.NativeImageDecoder
 import org.fossify.gallery.engine.image.NativeTiledImageViewer
 import org.fossify.gallery.engine.image.rememberThumbnail
+import org.fossify.gallery.engine.vault.VaultCrypto
+import org.fossify.gallery.engine.vault.VaultManager
 import org.fossify.gallery.models.Medium
 import kotlin.math.max
 
@@ -52,11 +54,24 @@ fun PhotoPage(
 
     LaunchedEffect(medium.uri, maxTargetPx) {
         isLoading = true
-        val decoded = NativeImageDecoder.decodeImage(
-            contentResolver = context.contentResolver,
-            uri = medium.uri,
-            maxDimensionPx = maxTargetPx
-        )
+        val decoded = if (medium.uri.scheme == VaultCrypto.VAULT_SCHEME) {
+            val bytes = VaultManager.decryptMediaBytes(medium.id)
+            if (bytes != null) {
+                try {
+                    NativeImageDecoder.decodeFromBytes(bytes, maxDimensionPx = maxTargetPx)
+                } finally {
+                    bytes.fill(0)
+                }
+            } else {
+                null
+            }
+        } else {
+            NativeImageDecoder.decodeImage(
+                contentResolver = context.contentResolver,
+                uri = medium.uri,
+                maxDimensionPx = maxTargetPx
+            )
+        }
         decodedResult = decoded
         if (decoded is DecodedImageResult.Static) {
             onBitmapReady(medium.id, decoded.bitmap)

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Wallpaper
@@ -62,8 +63,10 @@ import java.util.Locale
 fun ViewerTopBar(
     medium: Medium,
     isFavorite: Boolean,
+    isVaultMode: Boolean = false,
     onFavoriteToggle: () -> Unit,
     onDetailsClick: () -> Unit,
+    onMoveToVaultClick: (() -> Unit)? = null,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -91,7 +94,6 @@ fun ViewerTopBar(
             .padding(horizontal = 16.dp, vertical = 6.dp)
             .height(48.dp)
     ) {
-        // 1. Left: Circular Back bubble
         val backInteraction = remember { MutableInteractionSource() }
         Surface(
             shape = CircleShape,
@@ -123,7 +125,6 @@ fun ViewerTopBar(
             }
         }
 
-        // 2. Center: Floating Date/Time pill (replaces raw filename, tap opens Details)
         val dateInteraction = remember { MutableInteractionSource() }
         Surface(
             shape = RoundedCornerShape(24.dp),
@@ -158,7 +159,6 @@ fun ViewerTopBar(
             }
         }
 
-        // 3. Right: Circular 3-dot bubble + M3 Expressive rounded overflow menu
         Box(modifier = Modifier.align(Alignment.CenterEnd)) {
             val menuInteraction = remember { MutableInteractionSource() }
             Surface(
@@ -202,29 +202,57 @@ fun ViewerTopBar(
             ) {
                 val itemPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp)
 
-                DropdownMenuItem(
-                    contentPadding = itemPadding,
-                    leadingIcon = {
-                        Icon(
-                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = null,
-                            tint = if (isFavorite) darkScheme.primary else darkScheme.onSurface,
-                            modifier = Modifier.size(20.dp)
+                if (!isVaultMode) {
+                    DropdownMenuItem(
+                        contentPadding = itemPadding,
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = null,
+                                tint = if (isFavorite) darkScheme.primary else darkScheme.onSurface,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        },
+                        text = {
+                            Text(
+                                text = if (isFavorite) "Remove favorite" else "Favorite",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = darkScheme.onSurface
+                            )
+                        },
+                        onClick = {
+                            isMenuOpen = false
+                            onFavoriteToggle()
+                        }
+                    )
+
+                    if (onMoveToVaultClick != null) {
+                        DropdownMenuItem(
+                            contentPadding = itemPadding,
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = null,
+                                    tint = darkScheme.onSurface,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            text = {
+                                Text(
+                                    text = "Move to Locked Folder",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    color = darkScheme.onSurface
+                                )
+                            },
+                            onClick = {
+                                isMenuOpen = false
+                                onMoveToVaultClick()
+                            }
                         )
-                    },
-                    text = {
-                        Text(
-                            text = if (isFavorite) "Remove favorite" else "Favorite",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                            color = darkScheme.onSurface
-                        )
-                    },
-                    onClick = {
-                        isMenuOpen = false
-                        onFavoriteToggle()
                     }
-                )
+                }
 
                 DropdownMenuItem(
                     contentPadding = itemPadding,
@@ -250,17 +278,42 @@ fun ViewerTopBar(
                     }
                 )
 
-                HorizontalDivider(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
-                    color = darkScheme.outlineVariant.copy(alpha = 0.35f)
-                )
+                if (!isVaultMode) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                        color = darkScheme.outlineVariant.copy(alpha = 0.35f)
+                    )
 
-                if (!medium.isVideo) {
+                    if (!medium.isVideo) {
+                        DropdownMenuItem(
+                            contentPadding = itemPadding,
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Wallpaper,
+                                    contentDescription = null,
+                                    tint = darkScheme.onSurface,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            text = {
+                                Text(
+                                    text = "Set as wallpaper",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = darkScheme.onSurface
+                                )
+                            },
+                            onClick = {
+                                isMenuOpen = false
+                                launchSetWallpaper(context, medium)
+                            }
+                        )
+                    }
+
                     DropdownMenuItem(
                         contentPadding = itemPadding,
                         leadingIcon = {
                             Icon(
-                                imageVector = Icons.Default.Wallpaper,
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                                 contentDescription = null,
                                 tint = darkScheme.onSurface,
                                 modifier = Modifier.size(20.dp)
@@ -268,71 +321,48 @@ fun ViewerTopBar(
                         },
                         text = {
                             Text(
-                                text = "Set as wallpaper",
+                                text = "Open with",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = darkScheme.onSurface
                             )
                         },
                         onClick = {
                             isMenuOpen = false
-                            launchSetWallpaper(context, medium)
+                            val intent = Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(medium.uri, medium.mimeType)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Open with"))
+                        }
+                    )
+
+                    DropdownMenuItem(
+                        contentPadding = itemPadding,
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = null,
+                                tint = darkScheme.onSurface,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        },
+                        text = {
+                            Text(
+                                text = "Use as",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = darkScheme.onSurface
+                            )
+                        },
+                        onClick = {
+                            isMenuOpen = false
+                            val intent = Intent(Intent.ACTION_ATTACH_DATA).apply {
+                                setDataAndType(medium.uri, medium.mimeType)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Use as"))
                         }
                     )
                 }
-
-                DropdownMenuItem(
-                    contentPadding = itemPadding,
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                            contentDescription = null,
-                            tint = darkScheme.onSurface,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    },
-                    text = {
-                        Text(
-                            text = "Open with",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = darkScheme.onSurface
-                        )
-                    },
-                    onClick = {
-                        isMenuOpen = false
-                        val intent = Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(medium.uri, medium.mimeType)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        context.startActivity(Intent.createChooser(intent, "Open with"))
-                    }
-                )
-
-                DropdownMenuItem(
-                    contentPadding = itemPadding,
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.Tune,
-                            contentDescription = null,
-                            tint = darkScheme.onSurface,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    },
-                    text = {
-                        Text(
-                            text = "Use as",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = darkScheme.onSurface
-                        )
-                    },
-                    onClick = {
-                        isMenuOpen = false
-                        val intent = Intent(Intent.ACTION_ATTACH_DATA).apply {
-                            setDataAndType(medium.uri, medium.mimeType)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        context.startActivity(Intent.createChooser(intent, "Use as"))
-                    }
-                )
             }
         }
     }

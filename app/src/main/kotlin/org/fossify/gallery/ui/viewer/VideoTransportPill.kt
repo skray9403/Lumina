@@ -9,7 +9,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -36,11 +35,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
@@ -134,20 +131,9 @@ fun VideoTransportPill(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .drawWithCache {
-                val scrim = Brush.verticalGradient(
-                    0.0f to Color.Transparent,
-                    0.45f to Color.Black.copy(alpha = 0.42f),
-                    1.0f to Color.Black.copy(alpha = 0.72f)
-                )
-                onDrawBehind {
-                    drawRect(brush = scrim)
-                }
-            }
-            .padding(horizontal = 16.dp, vertical = 6.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        // Row 1: Play/Pause (left) · Tabular Timestamp (center) · Volume/Mute (right)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -224,7 +210,6 @@ fun VideoTransportPill(
             }
         }
 
-        // Row 2: Full-width Material 3 Expressive vertical-handle seekbar
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
@@ -281,7 +266,6 @@ fun VideoTransportPill(
             val handleX = (handleW / 2f + displayedFraction * (size.width - handleW))
                 .coerceIn(handleW / 2f, size.width - handleW / 2f)
 
-            // Active track (left of handle with crisp gap)
             val activeEnd = (handleX - handleW / 2f - gap).coerceAtLeast(0f)
             if (activeEnd > 1f) {
                 drawRoundRect(
@@ -292,7 +276,6 @@ fun VideoTransportPill(
                 )
             }
 
-            // Inactive track (right of handle with crisp gap)
             val inactiveStart = (handleX + handleW / 2f + gap).coerceAtMost(size.width)
             val inactiveW = (size.width - inactiveStart).coerceAtLeast(0f)
             if (inactiveW > 1f) {
@@ -302,7 +285,6 @@ fun VideoTransportPill(
                     size = Size(inactiveW, trackH),
                     cornerRadius = trackRadius
                 )
-                // Expressive end-stop dot on the right tip
                 drawCircle(
                     color = Color.White.copy(alpha = 0.78f),
                     radius = trackH * 0.42f,
@@ -310,7 +292,6 @@ fun VideoTransportPill(
                 )
             }
 
-            // Tall vertical pill thumb handle
             drawRoundRect(
                 color = Color.White,
                 topLeft = Offset(handleX - handleW / 2f, cy - handleH / 2f),

@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +40,7 @@ fun SelectionTopBar(
     onClearSelection: () -> Unit,
     onSelectAll: () -> Unit,
     modifier: Modifier = Modifier,
+    onLockSelected: (() -> Unit)? = null,
     showConfirmPick: Boolean = false,
     onConfirmPick: () -> Unit = {}
 ) {
@@ -76,6 +78,15 @@ fun SelectionTopBar(
                     .weight(1f)
                     .padding(horizontal = 6.dp)
             )
+
+            if (onLockSelected != null && !showConfirmPick && selectedCount > 0) {
+                PillIconButton(
+                    icon = Icons.Default.Lock,
+                    contentDescription = "Move to Locked Folder",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    onClick = onLockSelected
+                )
+            }
 
             PillIconButton(
                 icon = Icons.Default.SelectAll,

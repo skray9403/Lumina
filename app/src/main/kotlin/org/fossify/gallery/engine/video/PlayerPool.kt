@@ -5,9 +5,12 @@ import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.fossify.gallery.engine.vault.VaultCrypto
+import org.fossify.gallery.engine.vault.VaultManager
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerPool(context: Context) {
@@ -26,7 +29,13 @@ class PlayerPool(context: Context) {
 
         if (currentUri != uri) {
             currentUri = uri
-            player.setMediaItem(MediaItem.fromUri(uri))
+            if (uri.scheme == VaultCrypto.VAULT_SCHEME) {
+                val source = ProgressiveMediaSource.Factory(VaultManager.createDataSourceFactory())
+                    .createMediaSource(MediaItem.fromUri(uri))
+                player.setMediaSource(source)
+            } else {
+                player.setMediaItem(MediaItem.fromUri(uri))
+            }
             player.prepare()
             player.playWhenReady = true
         }

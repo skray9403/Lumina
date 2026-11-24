@@ -3,6 +3,7 @@ package org.fossify.gallery.ui.home
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -51,6 +52,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import org.fossify.gallery.engine.vault.VaultManager
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.ui.navigation.DockScrollState
 import org.fossify.gallery.ui.theme.LuminaMotion
@@ -66,7 +68,7 @@ fun LuminaHomeScreen(
     onAlbumGridRootOffsetChange: (Offset) -> Unit,
     hiddenMediaId: Long?,
     isViewerOpen: Boolean,
-    onMediaClick: (Medium, Boolean, Boolean) -> Unit,
+    onMediaClick: (Medium, Boolean, Boolean, Boolean) -> Unit,
     modifier: Modifier = Modifier,
     pickerMode: Boolean = false,
     allowMultiple: Boolean = false,
@@ -98,9 +100,7 @@ fun LuminaHomeScreen(
             perms[Manifest.permission.READ_MEDIA_VIDEO] == true ||
             (Build.VERSION.SDK_INT >= 34 && perms[Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED] == true)
         hasMediaPermission = granted || hasAnyMediaAccess()
-        if (hasMediaPermission) {
-            viewModel.refresh()
-        }
+        if (hasMediaPermission) viewModel.refresh()
     }
 
     fun requestPermissions() {
@@ -115,11 +115,7 @@ fun LuminaHomeScreen(
     }
 
     LaunchedEffect(Unit) {
-        if (!hasAnyMediaAccess()) {
-            requestPermissions()
-        } else {
-            hasMediaPermission = true
-        }
+        if (!hasAnyMediaAccess()) requestPermissions() else hasMediaPermission = true
     }
 
     BackHandler(enabled = !isViewerOpen && state.isMultiSelectMode) {
@@ -145,15 +141,11 @@ fun LuminaHomeScreen(
     }
 
     LaunchedEffect(state.pendingIntentRequest) {
-        state.pendingIntentRequest?.let { req ->
-            actionLauncher.launch(req)
-        }
+        state.pendingIntentRequest?.let { actionLauncher.launch(it) }
     }
 
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-
-    // Row 1 starts cleanly below the scroll-0 header bar (zero fog/overlap at rest)
     val gridContentPadding = PaddingValues(
         top = statusBarTop + 62.dp,
         bottom = navBarBottom + 96.dp
@@ -193,6 +185,8 @@ fun LuminaHomeScreen(
                     } else {
                         MediaTimelineGrid(
                             media = state.visibleMedia,
+                            sections = state.visibleSections,
+                            showSectionHeaders = state.groupBy != MediaGroupBy.DATE,
                             indexToDatePill = state.indexToDatePill,
                             columnCount = state.columnCount,
                             gridState = photosGridState,
@@ -201,7 +195,7 @@ fun LuminaHomeScreen(
                             hiddenMediaId = if (state.activeAlbumId == null) hiddenMediaId else null,
                             onGridRootOffsetChange = onPhotosGridRootOffsetChange,
                             onColumnCountChange = { viewModel.setColumnCount(it) },
-                            onMediaClick = { medium -> onMediaClick(medium, false, false) },
+                            onMediaClick = { medium -> onMediaClick(medium, false, false, false) },
                             onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
                             contentPadding = gridContentPadding
                         )
@@ -215,6 +209,15 @@ fun LuminaHomeScreen(
                         trashedCount = state.trashedMedia.size,
                         onFavoritesClick = { viewModel.openFavorites() },
                         onTrashClick = { viewModel.openTrash() },
+                        onLockedFolderClick = {
+                            VaultManager.unlock(context) { ok, err ->
+                                if (ok) {
+                                    viewModel.openVault()
+                                } else if (!err.isNullOrBlank()) {
+                                    Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
                         onAlbumClick = { album -> viewModel.openAlbum(album) },
                         gridState = albumsGridState,
                         contentPadding = gridContentPadding
@@ -223,7 +226,6 @@ fun LuminaHomeScreen(
             }
         }
 
-        // Scroll-0 "Lumina" / "Albums" header -> tight snap floating pills + status-bar-only halo
         if (state.activeAlbumId == null) {
             val activeTabGrid = if (state.selectedTab == GalleryTab.PHOTOS) photosGridState else albumsGridState
             FloatingTopChrome(
@@ -236,8 +238,13 @@ fun LuminaHomeScreen(
                 isMultiSelectMode = state.isMultiSelectMode,
                 selectedCount = state.selectedIds.size,
                 columnCount = state.columnCount,
+                mediaFilter = state.mediaFilter,
+                groupBy = state.groupBy,
+                allowFolderGrouping = state.selectedTab == GalleryTab.PHOTOS,
                 showConfirmPick = pickerMode && allowMultiple,
                 onColumnCountChange = { viewModel.setColumnCount(it) },
+                onMediaFilterChange = { viewModel.setMediaFilter(it) },
+                onGroupByChange = { viewModel.setGroupBy(it) },
                 onRefresh = { viewModel.refresh() },
                 onClearSelection = { viewModel.clearSelection() },
                 onSelectAll = { viewModel.selectAll() },
@@ -250,20 +257,28 @@ fun LuminaHomeScreen(
             AlbumDetailOverlay(
                 albumName = state.activeAlbumName ?: "Album",
                 isTrashOverlay = state.isTrashOverlay,
+                isVaultOverlay = state.isVaultOverlay,
                 media = state.albumMedia,
+                sections = state.albumSections,
                 indexToDatePill = state.albumIndexToDatePill,
                 gridState = albumGridState,
                 dockScrollState = dockScrollState,
                 columnCount = state.columnCount,
+                mediaFilter = state.mediaFilter,
+                groupBy = state.groupBy,
                 selectedIds = state.selectedIds,
                 isMultiSelectMode = state.isMultiSelectMode,
                 hiddenMediaId = hiddenMediaId,
                 onGridRootOffsetChange = onAlbumGridRootOffsetChange,
                 showConfirmPick = pickerMode && allowMultiple,
                 enabledBack = !isViewerOpen && !state.isMultiSelectMode && !state.isSearchActive,
-                onMediaClick = { medium -> onMediaClick(medium, true, state.isTrashOverlay) },
+                onMediaClick = { medium ->
+                    onMediaClick(medium, true, state.isTrashOverlay, state.isVaultOverlay)
+                },
                 onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
                 onColumnCountChange = { viewModel.setColumnCount(it) },
+                onMediaFilterChange = { viewModel.setMediaFilter(it) },
+                onGroupByChange = { viewModel.setGroupBy(it) },
                 onRefresh = { viewModel.refresh() },
                 onClearSelection = { viewModel.clearSelection() },
                 onSelectAll = { viewModel.selectAll() },

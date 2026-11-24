@@ -18,11 +18,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -96,6 +98,8 @@ fun LazyGridState.findItemBoundsInRoot(gridRootOffset: Offset, mediaId: Long): R
 @Composable
 fun MediaTimelineGrid(
     media: List<Medium>,
+    sections: List<TimelineSection> = emptyList(),
+    showSectionHeaders: Boolean = false,
     indexToDatePill: List<String>,
     columnCount: Int,
     gridState: LazyGridState,
@@ -115,7 +119,6 @@ fun MediaTimelineGrid(
     val latestColumns by rememberUpdatedState(clampedColumns)
     val latestOnColumnsChange by rememberUpdatedState(onColumnCountChange)
 
-    // 2-row lookahead thumbnail prefetching ahead of viewport
     LaunchedEffect(gridState, media, clampedColumns) {
         if (media.isEmpty()) return@LaunchedEffect
         val resolver = context.contentResolver
@@ -144,7 +147,6 @@ fun MediaTimelineGrid(
     Box(
         modifier = modifier
             .fillMaxSize()
-            // Zero-overhead 2-finger pinch-to-zoom column count (ignores 1-finger scrolling completely)
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -195,30 +197,63 @@ fun MediaTimelineGrid(
             horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            items(
-                items = media,
-                key = { it.id },
-                contentType = { "media_item" }
-            ) { medium ->
-                val isSelected = isMultiSelectMode && medium.id in selectedIds
-                TimelineMediaItem(
-                    medium = medium,
-                    isSelected = isSelected,
-                    isMultiSelectMode = isMultiSelectMode,
-                    isHidden = medium.id == hiddenMediaId,
-                    onClick = {
-                        if (isMultiSelectMode) {
-                            onMediaLongClick(medium)
-                        } else {
-                            onMediaClick(medium)
-                        }
-                    },
-                    onLongClick = { onMediaLongClick(medium) }
-                )
+            if (showSectionHeaders && sections.isNotEmpty()) {
+                sections.forEach { section ->
+                    item(
+                        key = "group_hdr_${section.title}",
+                        span = { GridItemSpan(maxLineSpan) },
+                        contentType = "group_header"
+                    ) {
+                        Text(
+                            text = section.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 12.dp, end = 12.dp, top = 14.dp, bottom = 6.dp)
+                        )
+                    }
+
+                    items(
+                        items = section.items,
+                        key = { it.id },
+                        contentType = { "media_item" }
+                    ) { medium ->
+                        val isSelected = isMultiSelectMode && medium.id in selectedIds
+                        TimelineMediaItem(
+                            medium = medium,
+                            isSelected = isSelected,
+                            isMultiSelectMode = isMultiSelectMode,
+                            isHidden = medium.id == hiddenMediaId,
+                            onClick = {
+                                if (isMultiSelectMode) onMediaLongClick(medium) else onMediaClick(medium)
+                            },
+                            onLongClick = { onMediaLongClick(medium) }
+                        )
+                    }
+                }
+            } else {
+                items(
+                    items = media,
+                    key = { it.id },
+                    contentType = { "media_item" }
+                ) { medium ->
+                    val isSelected = isMultiSelectMode && medium.id in selectedIds
+                    TimelineMediaItem(
+                        medium = medium,
+                        isSelected = isSelected,
+                        isMultiSelectMode = isMultiSelectMode,
+                        isHidden = medium.id == hiddenMediaId,
+                        onClick = {
+                            if (isMultiSelectMode) onMediaLongClick(medium) else onMediaClick(medium)
+                        },
+                        onLongClick = { onMediaLongClick(medium) }
+                    )
+                }
             }
         }
 
-        // Fast-scroll draggable thumb + date bubble (only mounted when feed has enough rows)
         if (media.size >= 36) {
             FastScrollOverlay(
                 gridState = gridState,
@@ -356,9 +391,7 @@ private fun FastScrollOverlay(
                                     lastHapticDate = dateAtIdx
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 }
-                                scope.launch {
-                                    gridState.scrollToItem(targetIdx)
-                                }
+                                scope.launch { gridState.scrollToItem(targetIdx) }
                             }
                         )
                     }
@@ -405,16 +438,10 @@ private fun TimelineMediaItem(
         modifier = Modifier
             .aspectRatio(1f)
             .background(
-                if (isSelected) {
-                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerLow
-                }
+                if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                else MaterialTheme.colorScheme.surfaceContainerLow
             )
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick
-            )
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
         Box(
             modifier = Modifier
@@ -459,11 +486,7 @@ private fun TimelineMediaItem(
 
         if (isMultiSelectMode) {
             val checkBg by animateColorAsState(
-                targetValue = if (isSelected) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    Color.Black.copy(alpha = 0.42f)
-                },
+                targetValue = if (isSelected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.42f),
                 animationSpec = LuminaMotion.colorTransition,
                 label = "tile_check_bg"
             )

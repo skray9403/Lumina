@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -41,11 +42,6 @@ sealed interface DecodedImageResult {
     ) : DecodedImageResult
 }
 
-/**
- * Single-pass native hardware ImageDecoder pipeline (API 33+).
- * Downsamples static bitmaps to maxDimensionPx to stay safely within GPU texture limits
- * while preserving full natural dimensions for BitmapRegionDecoder deep zoom.
- */
 object NativeImageDecoder {
 
     suspend fun decodeImage(
@@ -54,57 +50,68 @@ object NativeImageDecoder {
         maxDimensionPx: Int = 2048
     ): DecodedImageResult? = withContext(Dispatchers.IO) {
         try {
-            val source = ImageDecoder.createSource(contentResolver, uri)
-            var fullWidth = 0
-            var fullHeight = 0
-
-            val drawable = ImageDecoder.decodeDrawable(source) { decoder, info, _ ->
-                fullWidth = info.size.width
-                fullHeight = info.size.height
-
-                if (info.isAnimated) {
-                    decoder.allocator = ImageDecoder.ALLOCATOR_DEFAULT
-                } else {
-                    decoder.allocator = ImageDecoder.ALLOCATOR_HARDWARE
-                    decoder.isMutableRequired = false
-
-                    val maxSrc = max(info.size.width, info.size.height)
-                    if (maxDimensionPx > 0 && maxSrc > maxDimensionPx) {
-                        val scale = maxDimensionPx.toFloat() / maxSrc.toFloat()
-                        val targetW = (info.size.width * scale).roundToInt().coerceAtLeast(1)
-                        val targetH = (info.size.height * scale).roundToInt().coerceAtLeast(1)
-                        decoder.setTargetSize(targetW, targetH)
-                    }
-                }
-            }
-
-            when (drawable) {
-                is AnimatedImageDrawable -> DecodedImageResult.Animated(
-                    drawable = drawable,
-                    width = drawable.intrinsicWidth,
-                    height = drawable.intrinsicHeight
-                )
-                is BitmapDrawable -> {
-                    val bmp = drawable.bitmap
-                    DecodedImageResult.Static(
-                        bitmap = bmp.asImageBitmap(),
-                        displayWidth = bmp.width,
-                        displayHeight = bmp.height,
-                        fullWidth = if (fullWidth > 0) fullWidth else bmp.width,
-                        fullHeight = if (fullHeight > 0) fullHeight else bmp.height
-                    )
-                }
-                else -> null
-            }
+            decodeSource(ImageDecoder.createSource(contentResolver, uri), maxDimensionPx)
         } catch (_: Exception) {
             null
         }
     }
+
+    suspend fun decodeFromBytes(
+        bytes: ByteArray,
+        maxDimensionPx: Int = 2048
+    ): DecodedImageResult? = withContext(Dispatchers.IO) {
+        try {
+            decodeSource(ImageDecoder.createSource(ByteBuffer.wrap(bytes)), maxDimensionPx)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun decodeSource(source: ImageDecoder.Source, maxDimensionPx: Int): DecodedImageResult? {
+        var fullWidth = 0
+        var fullHeight = 0
+
+        val drawable = ImageDecoder.decodeDrawable(source) { decoder, info, _ ->
+            fullWidth = info.size.width
+            fullHeight = info.size.height
+
+            if (info.isAnimated) {
+                decoder.allocator = ImageDecoder.ALLOCATOR_DEFAULT
+            } else {
+                decoder.allocator = ImageDecoder.ALLOCATOR_HARDWARE
+                decoder.isMutableRequired = false
+
+                val maxSrc = max(info.size.width, info.size.height)
+                if (maxDimensionPx > 0 && maxSrc > maxDimensionPx) {
+                    val scale = maxDimensionPx.toFloat() / maxSrc.toFloat()
+                    val targetW = (info.size.width * scale).roundToInt().coerceAtLeast(1)
+                    val targetH = (info.size.height * scale).roundToInt().coerceAtLeast(1)
+                    decoder.setTargetSize(targetW, targetH)
+                }
+            }
+        }
+
+        return when (drawable) {
+            is AnimatedImageDrawable -> DecodedImageResult.Animated(
+                drawable = drawable,
+                width = drawable.intrinsicWidth,
+                height = drawable.intrinsicHeight
+            )
+            is BitmapDrawable -> {
+                val bmp = drawable.bitmap
+                DecodedImageResult.Static(
+                    bitmap = bmp.asImageBitmap(),
+                    displayWidth = bmp.width,
+                    displayHeight = bmp.height,
+                    fullWidth = if (fullWidth > 0) fullWidth else bmp.width,
+                    fullHeight = if (fullHeight > 0) fullHeight else bmp.height
+                )
+            }
+            else -> null
+        }
+    }
 }
 
-/**
- * Vsync-locked Compose Canvas renderer for AnimatedImageDrawable (GIF/WebP/HEIF).
- */
 @Composable
 fun NativeAnimatedCanvas(
     drawable: AnimatedImageDrawable,
@@ -125,7 +132,6 @@ fun NativeAnimatedCanvas(
     }
 
     Canvas(modifier = modifier.fillMaxSize()) {
-        // Subscribe draw phase only to vsync tick
         if (frameNanos == Long.MIN_VALUE) return@Canvas
 
         val canvasWidth = size.width

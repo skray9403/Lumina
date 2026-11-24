@@ -9,12 +9,16 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.Icon
+import android.os.Build
+import android.service.chooser.ChooserAction
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.fossify.gallery.models.Medium
+import org.fossify.gallery.ui.LuminaActivity
 
 @Immutable
 data class QuickShareTarget(
@@ -34,6 +38,9 @@ class ShareTargetReceiver : BroadcastReceiver() {
 }
 
 object RecentShareStore {
+    const val ACTION_UPNP_CAST = "org.fossify.gallery.ACTION_UPNP_CAST"
+    const val EXTRA_UPNP_MEDIA_ID = "extra_upnp_media_id"
+
     private const val PREFS_NAME = "lumina_recent_share_targets"
     private const val KEY_COMPONENTS = "ordered_components"
     private const val MAX_RECENTS = 4
@@ -63,6 +70,29 @@ object RecentShareStore {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
         )
         val chooser = Intent.createChooser(sendIntent, null, pendingIntent.intentSender)
+
+        // Inject native "UPnP Cast" action directly into Android 14+ Sharesheet
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val castIntent = Intent(context.applicationContext, LuminaActivity::class.java).apply {
+                action = ACTION_UPNP_CAST
+                data = medium.uri
+                putExtra(EXTRA_UPNP_MEDIA_ID, medium.id)
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            val castPending = PendingIntent.getActivity(
+                context.applicationContext,
+                1002,
+                castIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val castAction = ChooserAction.Builder(
+                Icon.createWithResource(context, android.R.drawable.ic_menu_share),
+                "UPnP Cast",
+                castPending
+            ).build()
+            chooser.putExtra(Intent.EXTRA_CHOOSER_CUSTOM_ACTIONS, arrayOf(castAction))
+        }
+
         context.startActivity(chooser)
     }
 
@@ -113,7 +143,6 @@ object RecentShareStore {
             if (ordered.size >= limit) break
         }
         if (ordered.size < limit) {
-            // Seed remaining slots with distinct packages so user always has instant swipe-up targets
             val usedPackages = ordered.keys.mapTo(HashSet()) { it.packageName }
             for (info in resolved) {
                 val comp = ComponentName(info.activityInfo.packageName, info.activityInfo.name)

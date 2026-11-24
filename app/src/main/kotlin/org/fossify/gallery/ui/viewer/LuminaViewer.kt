@@ -14,8 +14,12 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
@@ -32,9 +36,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
@@ -77,6 +83,9 @@ fun LuminaViewer(
     initialSourceRect: Rect?,
     viewModel: ViewerViewModel,
     repository: LuminaMediaRepository,
+    isShareMenuOpen: Boolean = false,
+    isVaultMode: Boolean = false,
+    onMoveToVault: ((Medium) -> Unit)? = null,
     onPageChanged: (Int) -> Unit,
     onPrepareReturnRect: suspend (Long) -> Rect?,
     onHiddenGridIdChange: (Long?) -> Unit,
@@ -121,7 +130,6 @@ fun LuminaViewer(
     val playerPool = remember(context) { PlayerPool(context) }
     val activePlayer by playerPool.activePlayer.collectAsStateWithLifecycle()
 
-    // Track video playing & scrubbing state for auto-hiding the option dock during playback
     var isVideoPlaying by remember { mutableStateOf(false) }
     var isVideoScrubbing by remember { mutableStateOf(false) }
     var videoActionDockVisible by remember { mutableStateOf(true) }
@@ -163,15 +171,16 @@ fun LuminaViewer(
 
     val currentMedium = mediaList.getOrNull(pagerState.currentPage) ?: mediaList.first()
 
-    // Show option bar initially on video open/pause, then slide down & hide after 1.6s of playback
+    // Pause video dock auto-hide whenever paused, scrubbing, details open, or Share overflow menu open
     LaunchedEffect(
         currentMedium.id,
         currentMedium.isVideo,
         isVideoPlaying,
         isVideoScrubbing,
+        isShareMenuOpen,
         state.isDetailsSheetOpen
     ) {
-        if (!currentMedium.isVideo || !isVideoPlaying || isVideoScrubbing || state.isDetailsSheetOpen) {
+        if (!currentMedium.isVideo || !isVideoPlaying || isVideoScrubbing || isShareMenuOpen || state.isDetailsSheetOpen) {
             videoActionDockVisible = true
         } else {
             videoActionDockVisible = true
@@ -327,12 +336,22 @@ fun LuminaViewer(
     val dismissThresholdPx = with(density) { 120.dp.toPx() }
     val showChrome = state.isChromeVisible && morphPhase == MorphPhase.IDLE && backdropAlpha.value > 0.92f
     val clipPath = remember { Path() }
+    val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
-    // Smoothly lower the video player controls to bottom when the option dock hides during playback
     val transportBottomPadding by animateDpAsState(
         targetValue = if (videoActionDockVisible) 84.dp else 12.dp,
         animationSpec = LuminaMotion.expressiveSpatial(),
         label = "video_transport_bottom_pad"
+    )
+
+    val bottomScrimHeight by animateDpAsState(
+        targetValue = navBarBottom + when {
+            currentMedium.isVideo && videoActionDockVisible -> 196.dp
+            currentMedium.isVideo -> 124.dp
+            else -> 108.dp
+        },
+        animationSpec = LuminaMotion.expressiveSpatial(),
+        label = "viewer_bottom_scrim_height"
     )
 
     Box(
@@ -444,6 +463,29 @@ fun LuminaViewer(
             }
         }
 
+        // Single continuous bottom scrim anchored flush to 0.dp physical bottom edge (fixes light seam)
+        AnimatedVisibility(
+            visible = showChrome && !state.isDetailsSheetOpen,
+            enter = fadeIn(LuminaMotion.contentEnter),
+            exit = fadeOut(LuminaMotion.contentExit),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(bottomScrimHeight.coerceAtLeast(64.dp))
+                    .drawWithCache {
+                        val scrim = Brush.verticalGradient(
+                            0.0f to Color.Transparent,
+                            0.35f to Color.Black.copy(alpha = 0.34f),
+                            0.72f to Color.Black.copy(alpha = 0.68f),
+                            1.0f to Color.Black.copy(alpha = 0.84f)
+                        )
+                        onDrawBehind { drawRect(brush = scrim) }
+                    }
+            )
+        }
+
         AnimatedVisibility(
             visible = showChrome,
             enter = slideInVertically(LuminaMotion.chromeOffset) { -it } + fadeIn(LuminaMotion.contentEnter),
@@ -453,14 +495,15 @@ fun LuminaViewer(
             ViewerTopBar(
                 medium = currentMedium,
                 isFavorite = currentMedium.isFavorite,
+                isVaultMode = isVaultMode,
                 onFavoriteToggle = { viewModel.toggleFavorite(repository, currentMedium) },
                 onDetailsClick = { openDetailsSheet() },
+                onMoveToVaultClick = onMoveToVault?.let { cb -> { cb(currentMedium) } },
                 onBack = { triggerAnimatedClose() },
                 modifier = Modifier.fillMaxWidth()
             )
         }
 
-        // Modern video transport controls: glides smoothly down when the option bar hides during playback
         val transportPlayer = activePlayer
         AnimatedVisibility(
             visible = showChrome && currentMedium.isVideo && transportPlayer != null && !state.isDetailsSheetOpen,
