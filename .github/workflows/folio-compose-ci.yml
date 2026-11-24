@@ -45,7 +45,7 @@ jobs:
         run: sdkmanager "platforms;android-37.1" "build-tools;37.0.0"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Build the FOSS variant and run baseline checks
         run: |
