@@ -919,8 +919,8 @@ private fun SlidingDockTab(
         label = "tab_icon_pop"
     )
 
-    val horizontalPad = lerp(18f, 15f, collapseProgress).dp
-    val iconTextGap = (8f * (1f - collapseProgress)).dp
+    val horizontalPad = lerp(18f, 15f, collapseProgress).coerceAtLeast(0f).dp
+    val iconTextGap = (8f * (1f - collapseProgress)).coerceAtLeast(0f).dp
 
     Row(
         modifier = Modifier
@@ -1105,10 +1105,10 @@ private fun ConnectedActionPill(
         label = "connected_end_corner"
     )
     val shape = RoundedCornerShape(
-        topStart = startCorner,
-        bottomStart = startCorner,
-        topEnd = endCorner,
-        bottomEnd = endCorner
+        topStart = startCorner.coerceAtLeast(0.dp),
+        bottomStart = startCorner.coerceAtLeast(0.dp),
+        topEnd = endCorner.coerceAtLeast(0.dp),
+        bottomEnd = endCorner.coerceAtLeast(0.dp)
     )
 
     Box(
