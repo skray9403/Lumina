@@ -1,12 +1,8 @@
 package org.fossify.gallery.ui.home
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -25,6 +21,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.DropdownMenu
@@ -45,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
@@ -74,21 +73,17 @@ fun FloatingTopChrome(
     staticFloatingTitle: String?,
     statusBarHeight: Dp,
     alwaysFloating: Boolean,
-    isMultiSelectMode: Boolean,
-    selectedCount: Int,
     columnCount: Int,
     mediaFilter: MediaFilter,
     groupBy: MediaGroupBy,
+    sortOrder: SortOrder,
     allowFolderGrouping: Boolean,
-    showConfirmPick: Boolean,
     onBackClick: (() -> Unit)? = null,
     onColumnCountChange: (Int) -> Unit,
     onMediaFilterChange: (MediaFilter) -> Unit,
     onGroupByChange: (MediaGroupBy) -> Unit,
+    onSortOrderChange: (SortOrder) -> Unit,
     onRefresh: () -> Unit,
-    onClearSelection: () -> Unit,
-    onSelectAll: () -> Unit,
-    onConfirmPick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
@@ -107,7 +102,7 @@ fun FloatingTopChrome(
     }
 
     val floatingProgress by animateFloatAsState(
-        targetValue = if (isFloating || isMultiSelectMode) 1f else 0f,
+        targetValue = if (isFloating) 1f else 0f,
         animationSpec = TightSnapOverbounce,
         label = "top_chrome_float_snap"
     )
@@ -126,44 +121,26 @@ fun FloatingTopChrome(
                 .padding(horizontal = 16.dp, vertical = 6.dp)
                 .height(52.dp)
         ) {
-            AnimatedContent(
-                targetState = isMultiSelectMode,
-                transitionSpec = {
-                    fadeIn(LuminaMotion.throughZeroEnter) togetherWith
-                        fadeOut(LuminaMotion.throughZeroExit)
-                },
-                label = "top_chrome_selection_swap",
-                modifier = Modifier.fillMaxWidth()
-            ) { selecting ->
-                if (selecting) {
-                    SelectionTopBar(
-                        selectedCount = selectedCount,
-                        showConfirmPick = showConfirmPick,
-                        onClearSelection = onClearSelection,
-                        onSelectAll = onSelectAll,
-                        onConfirmPick = onConfirmPick
-                    )
-                } else {
-                    MorphingHeaderAndPills(
-                        gridState = gridState,
-                        indexToDatePill = indexToDatePill,
-                        headerTitle = headerTitle,
-                        staticFloatingTitle = staticFloatingTitle,
-                        alwaysFloating = alwaysFloating,
-                        floatingProgress = floatingProgress,
-                        columnCount = columnCount,
-                        mediaFilter = mediaFilter,
-                        groupBy = groupBy,
-                        allowFolderGrouping = allowFolderGrouping,
-                        tokens = tokens,
-                        onBackClick = onBackClick,
-                        onColumnCountChange = onColumnCountChange,
-                        onMediaFilterChange = onMediaFilterChange,
-                        onGroupByChange = onGroupByChange,
-                        onRefresh = onRefresh
-                    )
-                }
-            }
+            MorphingHeaderAndPills(
+                gridState = gridState,
+                indexToDatePill = indexToDatePill,
+                headerTitle = headerTitle,
+                staticFloatingTitle = staticFloatingTitle,
+                alwaysFloating = alwaysFloating,
+                floatingProgress = floatingProgress,
+                columnCount = columnCount,
+                mediaFilter = mediaFilter,
+                groupBy = groupBy,
+                sortOrder = sortOrder,
+                allowFolderGrouping = allowFolderGrouping,
+                tokens = tokens,
+                onBackClick = onBackClick,
+                onColumnCountChange = onColumnCountChange,
+                onMediaFilterChange = onMediaFilterChange,
+                onGroupByChange = onGroupByChange,
+                onSortOrderChange = onSortOrderChange,
+                onRefresh = onRefresh
+            )
         }
     }
 }
@@ -179,12 +156,14 @@ private fun MorphingHeaderAndPills(
     columnCount: Int,
     mediaFilter: MediaFilter,
     groupBy: MediaGroupBy,
+    sortOrder: SortOrder,
     allowFolderGrouping: Boolean,
     tokens: LuminaPillTokens,
     onBackClick: (() -> Unit)?,
     onColumnCountChange: (Int) -> Unit,
     onMediaFilterChange: (MediaFilter) -> Unit,
     onGroupByChange: (MediaGroupBy) -> Unit,
+    onSortOrderChange: (SortOrder) -> Unit,
     onRefresh: () -> Unit
 ) {
     val density = LocalDensity.current
@@ -195,7 +174,9 @@ private fun MorphingHeaderAndPills(
     val titleExitOffsetPx = with(density) { 14.dp.toPx() }
     val pillDropPx = with(density) { 10.dp.toPx() }
 
-    val hasActiveFilterOrGroup = mediaFilter != MediaFilter.ALL || groupBy != MediaGroupBy.DATE
+    val hasActiveFilterOrGroup = mediaFilter != MediaFilter.ALL ||
+        groupBy != MediaGroupBy.DATE ||
+        sortOrder != SortOrder.DESCENDING
     val menuBg = if (hasActiveFilterOrGroup) MaterialTheme.colorScheme.primaryContainer else tokens.containerColor
     val menuFg = if (hasActiveFilterOrGroup) MaterialTheme.colorScheme.onPrimaryContainer else tokens.contentColor
 
@@ -418,7 +399,40 @@ private fun MorphingHeaderAndPills(
                     }
                 }
 
-                // 3. Grid columns: 2 | 3 | 4 | 5
+                // 3. Sort order: Descending | Ascending
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Order",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 2.dp)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        MenuSegmentChip(
+                            label = "Descending",
+                            leadingIcon = Icons.Default.ArrowDownward,
+                            selected = sortOrder == SortOrder.DESCENDING,
+                            onClick = {
+                                onSortOrderChange(SortOrder.DESCENDING)
+                                menuExpanded = false
+                            }
+                        )
+                        MenuSegmentChip(
+                            label = "Ascending",
+                            leadingIcon = Icons.Default.ArrowUpward,
+                            selected = sortOrder == SortOrder.ASCENDING,
+                            onClick = {
+                                onSortOrderChange(SortOrder.ASCENDING)
+                                menuExpanded = false
+                            }
+                        )
+                    }
+                }
+
+                // 4. Grid columns: 2 | 3 | 4 | 5
                 Column(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -499,8 +513,14 @@ private fun MorphingHeaderAndPills(
 private fun MenuSegmentChip(
     label: String,
     selected: Boolean,
+    leadingIcon: ImageVector? = null,
     onClick: () -> Unit
 ) {
+    val contentColor = if (selected) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(16.dp))
@@ -512,16 +532,25 @@ private fun MenuSegmentChip(
             .padding(horizontal = 12.dp, vertical = 7.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-            color = if (selected) {
-                MaterialTheme.colorScheme.onPrimaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurface
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (leadingIcon != null) {
+                Icon(
+                    imageVector = leadingIcon,
+                    contentDescription = null,
+                    tint = contentColor,
+                    modifier = Modifier.size(14.dp)
+                )
             }
-        )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                color = contentColor
+            )
+        }
     }
 }
 

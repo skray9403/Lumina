@@ -2,8 +2,6 @@ package org.fossify.gallery.ui
 
 import android.app.Activity
 import android.app.Application
-import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import android.view.WindowManager
 import android.widget.Toast
@@ -231,14 +229,6 @@ fun LuminaApp(
                 onAlbumGridRootOffsetChange = { albumGridRootOffset = it },
                 hiddenMediaId = hiddenGridMediaId,
                 isViewerOpen = isViewerOpen,
-                pickerMode = pickerMode,
-                allowMultiple = allowMultiple,
-                onConfirmPick = {
-                    val picked = galleryState.allMedia
-                        .filter { it.id in galleryState.selectedIds }
-                        .map { it.uri }
-                    onMediaPicked(picked)
-                },
                 onMediaClick = { medium, fromAlbum, fromTrash, fromVault ->
                     if (pickerMode) {
                         if (allowMultiple) galleryViewModel.toggleSelection(medium.id)
@@ -334,6 +324,22 @@ fun LuminaApp(
                 )
             }
 
+            val selectedMedia = remember(
+                galleryState.selectedIds,
+                galleryState.isVaultOverlay,
+                galleryState.isTrashOverlay,
+                galleryState.vaultMedia,
+                galleryState.trashedMedia,
+                galleryState.allMedia
+            ) {
+                val source = when {
+                    galleryState.isVaultOverlay -> galleryState.vaultMedia
+                    galleryState.isTrashOverlay -> galleryState.trashedMedia
+                    else -> galleryState.allMedia
+                }
+                source.filter { it.id in galleryState.selectedIds }
+            }
+
             val dockInViewerMode = isViewerOpen && !isViewerClosing && safeViewerMedium != null
             val dockMode: DockMode? = when {
                 dockInViewerMode && safeViewerMedium != null -> DockMode.Viewer(
@@ -369,27 +375,27 @@ fun LuminaApp(
                     }
                 )
 
-                !dockInViewerMode && galleryState.isMultiSelectMode && !pickerMode -> DockMode.Selection(
+                !dockInViewerMode && galleryState.isMultiSelectMode -> DockMode.Selection(
                     selectedCount = galleryState.selectedIds.size,
+                    selectedMedia = selectedMedia,
                     isTrashMode = galleryState.isTrashOverlay,
                     isVaultMode = galleryState.isVaultOverlay,
-                    onShare = {
-                        val selectedMedia = galleryState.allMedia.filter { it.id in galleryState.selectedIds }
-                        shareMediaItems(context, selectedMedia)
+                    isPickerMode = pickerMode && allowMultiple,
+                    onClearSelection = { galleryViewModel.clearSelection() },
+                    onSelectAll = { galleryViewModel.selectAll() },
+                    onConfirmPick = {
+                        onMediaPicked(selectedMedia.map { it.uri })
                     },
                     onAddToAlbum = {
-                        val selectedMedia = galleryState.allMedia.filter { it.id in galleryState.selectedIds }
                         if (selectedMedia.isNotEmpty()) pendingAddToAlbumItems = selectedMedia
                     },
                     onMoveToVault = {
-                        val selectedMedia = galleryState.allMedia.filter { it.id in galleryState.selectedIds }
                         moveItemsToLockedFolder(selectedMedia)
                     },
                     onRestore = {
                         if (galleryState.isVaultOverlay) {
-                            val selectedVault = galleryState.vaultMedia.filter { it.id in galleryState.selectedIds }
                             scope.launch {
-                                val count = VaultManager.unlockItemsToGallery(context, selectedVault)
+                                val count = VaultManager.unlockItemsToGallery(context, selectedMedia)
                                 if (count > 0) {
                                     galleryViewModel.refresh()
                                     galleryViewModel.clearSelection()
@@ -400,12 +406,14 @@ fun LuminaApp(
                             galleryViewModel.restoreSelected()
                         }
                     },
+                    onUpnpCastClick = {
+                        upnpCastTarget = selectedMedia.firstOrNull()
+                    },
                     onDelete = {
                         when {
                             galleryState.isVaultOverlay -> {
-                                val selectedVault = galleryState.vaultMedia.filter { it.id in galleryState.selectedIds }
                                 scope.launch {
-                                    VaultManager.deletePermanently(context, selectedVault)
+                                    VaultManager.deletePermanently(context, selectedMedia)
                                     galleryViewModel.clearSelection()
                                     Toast.makeText(context, "Deleted permanently", Toast.LENGTH_SHORT).show()
                                 }
@@ -451,7 +459,7 @@ fun LuminaApp(
                     !viewerState.isDetailsSheetOpen &&
                     pendingAddToAlbumItems == null &&
                     upnpCastTarget == null
-                galleryState.isMultiSelectMode -> !pickerMode
+                galleryState.isMultiSelectMode -> !pickerMode || allowMultiple
                 else -> true
             }
 
@@ -494,22 +502,4 @@ fun LuminaApp(
             }
         }
     }
-}
-
-private fun shareMediaItems(context: Context, items: List<Medium>) {
-    if (items.isEmpty()) return
-    val uris = ArrayList(items.map { it.uri })
-    val shareIntent = Intent().apply {
-        if (uris.size == 1) {
-            action = Intent.ACTION_SEND
-            putExtra(Intent.EXTRA_STREAM, uris.first())
-            type = items.first().mimeType
-        } else {
-            action = Intent.ACTION_SEND_MULTIPLE
-            putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-            type = "*/*"
-        }
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    context.startActivity(Intent.createChooser(shareIntent, "Share with"))
 }

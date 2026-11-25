@@ -69,10 +69,7 @@ fun LuminaHomeScreen(
     hiddenMediaId: Long?,
     isViewerOpen: Boolean,
     onMediaClick: (Medium, Boolean, Boolean, Boolean) -> Unit,
-    modifier: Modifier = Modifier,
-    pickerMode: Boolean = false,
-    allowMultiple: Boolean = false,
-    onConfirmPick: () -> Unit = {}
+    modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -197,6 +194,7 @@ fun LuminaHomeScreen(
                             onColumnCountChange = { viewModel.setColumnCount(it) },
                             onMediaClick = { medium -> onMediaClick(medium, false, false, false) },
                             onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
+                            onSelectionChange = { viewModel.setSelection(it) },
                             contentPadding = gridContentPadding
                         )
                     }
@@ -235,20 +233,16 @@ fun LuminaHomeScreen(
                 staticFloatingTitle = if (state.selectedTab == GalleryTab.ALBUMS) "Albums" else null,
                 statusBarHeight = statusBarTop,
                 alwaysFloating = false,
-                isMultiSelectMode = state.isMultiSelectMode,
-                selectedCount = state.selectedIds.size,
                 columnCount = state.columnCount,
                 mediaFilter = state.mediaFilter,
                 groupBy = state.groupBy,
+                sortOrder = state.sortOrder,
                 allowFolderGrouping = state.selectedTab == GalleryTab.PHOTOS,
-                showConfirmPick = pickerMode && allowMultiple,
                 onColumnCountChange = { viewModel.setColumnCount(it) },
                 onMediaFilterChange = { viewModel.setMediaFilter(it) },
                 onGroupByChange = { viewModel.setGroupBy(it) },
+                onSortOrderChange = { viewModel.setSortOrder(it) },
                 onRefresh = { viewModel.refresh() },
-                onClearSelection = { viewModel.clearSelection() },
-                onSelectAll = { viewModel.selectAll() },
-                onConfirmPick = onConfirmPick,
                 modifier = Modifier.align(Alignment.TopCenter)
             )
         }
@@ -266,23 +260,22 @@ fun LuminaHomeScreen(
                 columnCount = state.columnCount,
                 mediaFilter = state.mediaFilter,
                 groupBy = state.groupBy,
+                sortOrder = state.sortOrder,
                 selectedIds = state.selectedIds,
                 isMultiSelectMode = state.isMultiSelectMode,
                 hiddenMediaId = hiddenMediaId,
                 onGridRootOffsetChange = onAlbumGridRootOffsetChange,
-                showConfirmPick = pickerMode && allowMultiple,
                 enabledBack = !isViewerOpen && !state.isMultiSelectMode && !state.isSearchActive,
                 onMediaClick = { medium ->
                     onMediaClick(medium, true, state.isTrashOverlay, state.isVaultOverlay)
                 },
                 onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
+                onSelectionChange = { viewModel.setSelection(it) },
                 onColumnCountChange = { viewModel.setColumnCount(it) },
                 onMediaFilterChange = { viewModel.setMediaFilter(it) },
                 onGroupByChange = { viewModel.setGroupBy(it) },
+                onSortOrderChange = { viewModel.setSortOrder(it) },
                 onRefresh = { viewModel.refresh() },
-                onClearSelection = { viewModel.clearSelection() },
-                onSelectAll = { viewModel.selectAll() },
-                onConfirmPick = onConfirmPick,
                 onCloseComplete = { viewModel.closeAlbum() },
                 modifier = Modifier.fillMaxSize()
             )

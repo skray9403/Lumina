@@ -6,6 +6,7 @@ import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
 import android.net.Uri
 import android.util.LruCache
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -19,7 +20,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,18 +32,21 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.fossify.gallery.ui.theme.LuminaMotion
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -77,8 +80,13 @@ fun NativeTiledImageViewer(
     val scope = rememberCoroutineScope()
 
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
-    var scale by remember(imageUri) { mutableFloatStateOf(1f) }
-    var offset by remember(imageUri) { mutableStateOf(Offset.Zero) }
+    val scaleAnim = remember(imageUri) { Animatable(1f) }
+    val offsetXAnim = remember(imageUri) { Animatable(0f) }
+    val offsetYAnim = remember(imageUri) { Animatable(0f) }
+    var doubleTapJob by remember(imageUri) { mutableStateOf<Job?>(null) }
+
+    val scale = scaleAnim.value
+    val offset = Offset(offsetXAnim.value, offsetYAnim.value)
 
     var regionDecoder by remember(imageUri) { mutableStateOf<BitmapRegionDecoder?>(null) }
     val tileCache = remember(imageUri) {
@@ -216,27 +224,7 @@ fun NativeTiledImageViewer(
         modifier = modifier
             .fillMaxSize()
             .onSizeChanged { viewportSize = it }
-            .pointerInput(imageUri) {
-                detectTapGestures(
-                    onTap = { onSingleTap() },
-                    onDoubleTap = { tapOffset ->
-                        if (scale > 1.2f) {
-                            scale = 1f
-                            offset = Offset.Zero
-                            onEdgeSwipeHandoff(true)
-                        } else {
-                            val newScale = 2.5f
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            val diff = tapOffset - center
-                            val rawOffset = -diff * (newScale - 1f)
-                            scale = newScale
-                            offset = clampOffset(rawOffset, newScale, size.width.toFloat(), size.height.toFloat())
-                            onEdgeSwipeHandoff(false)
-                        }
-                    }
-                )
-            }
-            .pointerInput(imageUri) {
+            .pointerInput(imageUri, imageWidth, imageHeight) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
                     var verticalDismissActive = false
@@ -245,75 +233,187 @@ fun NativeTiledImageViewer(
                     var totalDragX = 0f
                     var totalDragY = 0f
                     var lockedHorizontalForPager = false
+                    var hadMultiTouch = false
 
                     do {
                         val event = awaitPointerEvent()
                         val activePointers = event.changes.count { it.pressed }
+                        val pointerCountChanged = event.changes.any { it.pressed != it.previousPressed }
 
                         if (activePointers >= 2) {
+                            hadMultiTouch = true
                             verticalDismissActive = false
-                            val zoomChange = event.calculateZoom()
-                            val panChange = event.calculatePan()
-                            val centroid = event.calculateCentroid(useCurrent = true)
-                            if (zoomChange != 1f || panChange != Offset.Zero) {
-                                val oldScale = scale
-                                val newScale = (oldScale * zoomChange).coerceIn(1f, 8f)
-                                val center = Offset(size.width / 2f, size.height / 2f)
-                                val focal = centroid - center
-                                val newOffset = (offset - focal) * (newScale / oldScale) + focal + panChange
-                                scale = newScale
-                                offset = clampOffset(newOffset, newScale, size.width.toFloat(), size.height.toFloat())
-                                onEdgeSwipeHandoff(newScale <= 1.02f)
-                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            doubleTapJob?.cancel()
+                            doubleTapJob = null
+                            if (!pointerCountChanged) {
+                                val zoomChange = event.calculateZoom()
+                                val panChange = event.calculatePan()
+                                val centroid = event.calculateCentroid(useCurrent = true)
+                                if (zoomChange != 1f || panChange != Offset.Zero) {
+                                    val oldScale = scaleAnim.value
+                                    val newScale = (oldScale * zoomChange).coerceIn(1f, 8f)
+                                    val center = Offset(size.width / 2f, size.height / 2f)
+                                    val focal = centroid - center
+                                    val curOffset = Offset(offsetXAnim.value, offsetYAnim.value)
+                                    val rawOffset = (curOffset - focal) * (newScale / oldScale) + focal + panChange
+                                    val clamped = clampOffset(
+                                        raw = rawOffset,
+                                        scale = newScale,
+                                        viewportWidth = size.width.toFloat(),
+                                        viewportHeight = size.height.toFloat(),
+                                        imageWidth = imageWidth.toFloat(),
+                                        imageHeight = imageHeight.toFloat()
+                                    )
+                                    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                                        scaleAnim.snapTo(newScale)
+                                        offsetXAnim.snapTo(clamped.x)
+                                        offsetYAnim.snapTo(clamped.y)
+                                    }
+                                    onEdgeSwipeHandoff(newScale <= 1.02f)
+                                }
+                            }
+                            event.changes.forEach {
+                                if (it.positionChanged() || it.changedToUp()) it.consume()
                             }
                         } else if (activePointers == 1) {
-                            val pan = event.calculatePan()
-                            if (scale > 1.02f) {
-                                val maxPanX = max(0f, (size.width * scale - size.width) / 2f)
-                                val atLeftEdge = offset.x >= maxPanX - 1f && pan.x > 0f
-                                val atRightEdge = offset.x <= -maxPanX + 1f && pan.x < 0f
-                                if ((atLeftEdge || atRightEdge) && abs(pan.x) > abs(pan.y)) {
-                                    onEdgeSwipeHandoff(true)
-                                } else {
-                                    onEdgeSwipeHandoff(false)
-                                    offset = clampOffset(
-                                        offset + pan,
-                                        scale,
-                                        size.width.toFloat(),
-                                        size.height.toFloat()
-                                    )
-                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            if (hadMultiTouch) {
+                                if (!pointerCountChanged) {
+                                    val pan = event.calculatePan()
+                                    val curScale = scaleAnim.value
+                                    if (curScale > 1.02f && pan != Offset.Zero) {
+                                        val clamped = clampOffset(
+                                            raw = Offset(offsetXAnim.value, offsetYAnim.value) + pan,
+                                            scale = curScale,
+                                            viewportWidth = size.width.toFloat(),
+                                            viewportHeight = size.height.toFloat(),
+                                            imageWidth = imageWidth.toFloat(),
+                                            imageHeight = imageHeight.toFloat()
+                                        )
+                                        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                                            offsetXAnim.snapTo(clamped.x)
+                                            offsetYAnim.snapTo(clamped.y)
+                                        }
+                                    }
+                                    onEdgeSwipeHandoff(curScale <= 1.02f)
+                                }
+                                event.changes.forEach {
+                                    if (it.positionChanged() || it.changedToUp()) it.consume()
                                 }
                             } else {
-                                totalDragX += pan.x
-                                totalDragY += pan.y
+                                val pan = event.calculatePan()
+                                val curScale = scaleAnim.value
+                                if (curScale > 1.02f) {
+                                    val (fitW, _) = computeFitDimensions(
+                                        size.width.toFloat(),
+                                        size.height.toFloat(),
+                                        imageWidth.toFloat(),
+                                        imageHeight.toFloat()
+                                    )
+                                    val maxPanX = max(0f, (fitW * curScale - size.width) / 2f)
+                                    val curOffset = Offset(offsetXAnim.value, offsetYAnim.value)
+                                    val atLeftEdge = curOffset.x >= maxPanX - 1f && pan.x > 0f
+                                    val atRightEdge = curOffset.x <= -maxPanX + 1f && pan.x < 0f
+                                    if ((atLeftEdge || atRightEdge) && abs(pan.x) > abs(pan.y)) {
+                                        onEdgeSwipeHandoff(true)
+                                    } else {
+                                        onEdgeSwipeHandoff(false)
+                                        if (pan != Offset.Zero) {
+                                            doubleTapJob?.cancel()
+                                            doubleTapJob = null
+                                            val clamped = clampOffset(
+                                                raw = curOffset + pan,
+                                                scale = curScale,
+                                                viewportWidth = size.width.toFloat(),
+                                                viewportHeight = size.height.toFloat(),
+                                                imageWidth = imageWidth.toFloat(),
+                                                imageHeight = imageHeight.toFloat()
+                                            )
+                                            scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                                                offsetXAnim.snapTo(clamped.x)
+                                                offsetYAnim.snapTo(clamped.y)
+                                            }
+                                        }
+                                        event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                    }
+                                } else {
+                                    totalDragX += pan.x
+                                    totalDragY += pan.y
 
-                                if (!verticalDismissActive && !lockedHorizontalForPager && !swipeUpTriggered) {
-                                    val slop = viewConfiguration.touchSlop
-                                    if (abs(totalDragX) > slop && abs(totalDragX) > abs(totalDragY)) {
-                                        lockedHorizontalForPager = true
-                                    } else if (totalDragY > slop && abs(totalDragY) > abs(totalDragX) * 1.15f) {
-                                        verticalDismissActive = true
-                                    } else if (totalDragY < -slop * 3f && abs(totalDragY) > abs(totalDragX) * 1.25f) {
-                                        swipeUpTriggered = true
-                                        onSwipeUpDetails()
+                                    if (!verticalDismissActive && !lockedHorizontalForPager && !swipeUpTriggered) {
+                                        val slop = viewConfiguration.touchSlop
+                                        if (abs(totalDragX) > slop && abs(totalDragX) > abs(totalDragY)) {
+                                            lockedHorizontalForPager = true
+                                        } else if (totalDragY > slop && abs(totalDragY) > abs(totalDragX) * 1.15f) {
+                                            verticalDismissActive = true
+                                        } else if (totalDragY < -slop * 3f && abs(totalDragY) > abs(totalDragX) * 1.25f) {
+                                            swipeUpTriggered = true
+                                            onSwipeUpDetails()
+                                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                        }
+                                    }
+
+                                    if (verticalDismissActive) {
+                                        totalVerticalDrag += pan.y
+                                        onVerticalDismissDrag(totalVerticalDrag)
                                         event.changes.forEach { if (it.positionChanged()) it.consume() }
                                     }
                                 }
-
-                                if (verticalDismissActive) {
-                                    totalVerticalDrag += pan.y
-                                    onVerticalDismissDrag(totalVerticalDrag)
-                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                }
                             }
+                        } else if (hadMultiTouch) {
+                            event.changes.forEach { if (it.changedToUp()) it.consume() }
                         }
                     } while (event.changes.any { it.pressed })
 
                     if (verticalDismissActive) {
                         onVerticalDismissEnd(totalVerticalDrag)
                     }
+                    if (hadMultiTouch && scaleAnim.value <= 1.02f) {
+                        onEdgeSwipeHandoff(true)
+                        doubleTapJob?.cancel()
+                        doubleTapJob = scope.launch {
+                            val zoomSpring = LuminaMotion.expressiveSpatial<Float>()
+                            launch { scaleAnim.animateTo(1f, zoomSpring) }
+                            launch { offsetXAnim.animateTo(0f, zoomSpring) }
+                            launch { offsetYAnim.animateTo(0f, zoomSpring) }
+                        }
+                    }
                 }
+            }
+            .pointerInput(imageUri, imageWidth, imageHeight) {
+                detectTapGestures(
+                    onTap = { onSingleTap() },
+                    onDoubleTap = { tapOffset ->
+                        doubleTapJob?.cancel()
+                        val zoomSpring = LuminaMotion.expressiveSpatial<Float>()
+                        if (scaleAnim.value > 1.2f) {
+                            onEdgeSwipeHandoff(true)
+                            doubleTapJob = scope.launch {
+                                launch { scaleAnim.animateTo(1f, zoomSpring) }
+                                launch { offsetXAnim.animateTo(0f, zoomSpring) }
+                                launch { offsetYAnim.animateTo(0f, zoomSpring) }
+                            }
+                        } else {
+                            val newScale = 2.5f
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            val diff = tapOffset - center
+                            val rawOffset = -diff * (newScale - 1f)
+                            val target = clampOffset(
+                                raw = rawOffset,
+                                scale = newScale,
+                                viewportWidth = size.width.toFloat(),
+                                viewportHeight = size.height.toFloat(),
+                                imageWidth = imageWidth.toFloat(),
+                                imageHeight = imageHeight.toFloat()
+                            )
+                            onEdgeSwipeHandoff(false)
+                            doubleTapJob = scope.launch {
+                                launch { scaleAnim.animateTo(newScale, zoomSpring) }
+                                launch { offsetXAnim.animateTo(target.x, zoomSpring) }
+                                launch { offsetYAnim.animateTo(target.y, zoomSpring) }
+                            }
+                        }
+                    }
+                )
             }
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -388,9 +488,35 @@ fun NativeTiledImageViewer(
     }
 }
 
-private fun clampOffset(raw: Offset, scale: Float, width: Float, height: Float): Offset {
-    val maxX = max(0f, (width * scale - width) / 2f)
-    val maxY = max(0f, (height * scale - height) / 2f)
+private fun computeFitDimensions(
+    viewportWidth: Float,
+    viewportHeight: Float,
+    imageWidth: Float,
+    imageHeight: Float
+): Pair<Float, Float> {
+    if (viewportWidth <= 0f || viewportHeight <= 0f || imageWidth <= 0f || imageHeight <= 0f) {
+        return viewportWidth to viewportHeight
+    }
+    val baseAspect = imageWidth / imageHeight
+    val canvasAspect = viewportWidth / viewportHeight
+    return if (baseAspect > canvasAspect) {
+        viewportWidth to (viewportWidth / baseAspect)
+    } else {
+        (viewportHeight * baseAspect) to viewportHeight
+    }
+}
+
+private fun clampOffset(
+    raw: Offset,
+    scale: Float,
+    viewportWidth: Float,
+    viewportHeight: Float,
+    imageWidth: Float,
+    imageHeight: Float
+): Offset {
+    val (fitW, fitH) = computeFitDimensions(viewportWidth, viewportHeight, imageWidth, imageHeight)
+    val maxX = max(0f, (fitW * scale - viewportWidth) / 2f)
+    val maxY = max(0f, (fitH * scale - viewportHeight) / 2f)
     return Offset(
         x = raw.x.coerceIn(-maxX, maxX),
         y = raw.y.coerceIn(-maxY, maxY)

@@ -57,10 +57,25 @@ object RecentShareStore {
     }
 
     fun launchNativeShareSheet(context: Context, medium: Medium) {
-        val sendIntent = Intent(Intent.ACTION_SEND).apply {
-            putExtra(Intent.EXTRA_STREAM, medium.uri)
-            type = medium.mimeType
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        launchNativeShareSheet(context, listOf(medium))
+    }
+
+    fun launchNativeShareSheet(context: Context, items: List<Medium>) {
+        if (items.isEmpty()) return
+        val sendIntent = if (items.size == 1) {
+            val medium = items.first()
+            Intent(Intent.ACTION_SEND).apply {
+                putExtra(Intent.EXTRA_STREAM, medium.uri)
+                type = medium.mimeType
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        } else {
+            val resolvedMime = resolveSharedMimeType(items)
+            Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(items.map { it.uri }))
+                type = resolvedMime
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
         }
         val callbackIntent = Intent(context.applicationContext, ShareTargetReceiver::class.java)
         val pendingIntent = PendingIntent.getBroadcast(
@@ -72,11 +87,12 @@ object RecentShareStore {
         val chooser = Intent.createChooser(sendIntent, null, pendingIntent.intentSender)
 
         // Inject native "UPnP Cast" action directly into Android 14+ Sharesheet
+        val primary = items.first()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             val castIntent = Intent(context.applicationContext, LuminaActivity::class.java).apply {
                 action = ACTION_UPNP_CAST
-                data = medium.uri
-                putExtra(EXTRA_UPNP_MEDIA_ID, medium.id)
+                data = primary.uri
+                putExtra(EXTRA_UPNP_MEDIA_ID, primary.id)
                 addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
             val castPending = PendingIntent.getActivity(
@@ -97,17 +113,42 @@ object RecentShareStore {
     }
 
     fun shareDirectlyTo(context: Context, medium: Medium, target: QuickShareTarget) {
+        shareDirectlyTo(context, listOf(medium), target)
+    }
+
+    fun shareDirectlyTo(context: Context, items: List<Medium>, target: QuickShareTarget) {
+        if (items.isEmpty()) return
         recordChosenComponent(context, target.componentName)
-        val directIntent = Intent(Intent.ACTION_SEND).apply {
-            component = target.componentName
-            putExtra(Intent.EXTRA_STREAM, medium.uri)
-            type = medium.mimeType
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val directIntent = if (items.size == 1) {
+            val medium = items.first()
+            Intent(Intent.ACTION_SEND).apply {
+                component = target.componentName
+                putExtra(Intent.EXTRA_STREAM, medium.uri)
+                type = medium.mimeType
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        } else {
+            Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                component = target.componentName
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(items.map { it.uri }))
+                type = resolveSharedMimeType(items)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
         }
         try {
             context.startActivity(directIntent)
         } catch (_: Exception) {
-            launchNativeShareSheet(context, medium)
+            launchNativeShareSheet(context, items)
+        }
+    }
+
+    private fun resolveSharedMimeType(items: List<Medium>): String {
+        val allImages = items.all { !it.isVideo }
+        val allVideos = items.all { it.isVideo }
+        return when {
+            allImages -> "image/*"
+            allVideos -> "video/*"
+            else -> "*/*"
         }
     }
 

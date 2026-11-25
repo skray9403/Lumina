@@ -42,6 +42,11 @@ enum class MediaGroupBy {
     FOLDER
 }
 
+enum class SortOrder {
+    DESCENDING,
+    ASCENDING
+}
+
 @Immutable
 data class TimelineSection(
     val title: String,
@@ -59,6 +64,7 @@ data class GalleryUiState(
     val selectedTab: GalleryTab = GalleryTab.PHOTOS,
     val mediaFilter: MediaFilter = MediaFilter.ALL,
     val groupBy: MediaGroupBy = MediaGroupBy.DATE,
+    val sortOrder: SortOrder = SortOrder.DESCENDING,
     val selectedIds: Set<Long> = emptySet(),
     val isMultiSelectMode: Boolean = false,
     val columnCount: Int = 3,
@@ -84,6 +90,7 @@ private data class FilterInputs(
     val selectedTab: GalleryTab = GalleryTab.PHOTOS,
     val mediaFilter: MediaFilter = MediaFilter.ALL,
     val groupBy: MediaGroupBy = MediaGroupBy.DATE,
+    val sortOrder: SortOrder = SortOrder.DESCENDING,
     val selectedIds: Set<Long> = emptySet(),
     val columnCount: Int = 3,
     val searchQuery: String = "",
@@ -155,7 +162,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             query = if (inp.activeAlbumId == null) inp.searchQuery else ""
         )
         val effectiveMainGroup = if (inp.activeAlbumId == null) inp.groupBy else MediaGroupBy.DATE
-        val mainProj = buildProjection(mainFiltered, effectiveMainGroup)
+        val mainProj = buildProjection(mainFiltered, effectiveMainGroup, inp.sortOrder)
 
         val isTrashOverlay = inp.activeAlbumId == TRASH_BUCKET_ID
         val isVaultOverlay = inp.activeAlbumId == VAULT_BUCKET_ID
@@ -167,7 +174,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             else -> applySearch(typeFiltered.filter { it.bucketId == inp.activeAlbumId }, inp.searchQuery)
         }
         val effectiveAlbumGroup = if (inp.groupBy == MediaGroupBy.SIZE) MediaGroupBy.SIZE else MediaGroupBy.DATE
-        val albumProj = buildProjection(albumFiltered, effectiveAlbumGroup)
+        val albumProj = buildProjection(albumFiltered, effectiveAlbumGroup, inp.sortOrder)
 
         val resolvedAlbumName = when (inp.activeAlbumId) {
             FAVORITES_BUCKET_ID -> "Favorites"
@@ -186,6 +193,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             selectedTab = inp.selectedTab,
             mediaFilter = inp.mediaFilter,
             groupBy = inp.groupBy,
+            sortOrder = inp.sortOrder,
             selectedIds = inp.selectedIds,
             isMultiSelectMode = inp.selectedIds.isNotEmpty(),
             columnCount = inp.columnCount,
@@ -224,6 +232,10 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     fun setGroupBy(groupBy: MediaGroupBy) {
         inputs.update { it.copy(groupBy = groupBy) }
+    }
+
+    fun setSortOrder(order: SortOrder) {
+        inputs.update { it.copy(sortOrder = order) }
     }
 
     fun refresh() {
@@ -341,6 +353,12 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun setSelection(ids: Set<Long>) {
+        inputs.update { current ->
+            if (current.selectedIds == ids) current else current.copy(selectedIds = ids)
+        }
+    }
+
     fun selectAll() {
         val state = uiState.value
         val activeFeed = if (state.activeAlbumId != null) state.albumMedia else state.visibleMedia
@@ -427,19 +445,24 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun buildProjection(media: List<Medium>, groupBy: MediaGroupBy): FlatFeedProjection {
+    private fun buildProjection(
+        media: List<Medium>,
+        groupBy: MediaGroupBy,
+        sortOrder: SortOrder
+    ): FlatFeedProjection {
         if (media.isEmpty()) {
             return FlatFeedProjection(emptyList(), emptyList(), emptyList(), emptyMap())
         }
 
         return when (groupBy) {
-            MediaGroupBy.DATE -> buildDateProjection(media)
-            MediaGroupBy.SIZE -> buildSizeProjection(media)
-            MediaGroupBy.FOLDER -> buildFolderProjection(media)
+            MediaGroupBy.DATE -> buildDateProjection(media, sortOrder)
+            MediaGroupBy.SIZE -> buildSizeProjection(media, sortOrder)
+            MediaGroupBy.FOLDER -> buildFolderProjection(media, sortOrder)
         }
     }
 
-    private fun buildDateProjection(media: List<Medium>): FlatFeedProjection {
+    private fun buildDateProjection(media: List<Medium>, sortOrder: SortOrder): FlatFeedProjection {
+        val ordered = if (sortOrder == SortOrder.ASCENDING) media.sortedBy { it.dateTakenMs } else media
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val yesterday = today.minusDays(1)
@@ -448,14 +471,14 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         val fmtSameYear = DateTimeFormatter.ofPattern("EEE, d MMM", locale)
         val fmtOtherYear = DateTimeFormatter.ofPattern("EEE, d MMM yyyy", locale)
 
-        val indexToPill = ArrayList<String>(media.size)
-        val idToIndex = HashMap<Long, Int>(media.size)
+        val indexToPill = ArrayList<String>(ordered.size)
+        val idToIndex = HashMap<Long, Int>(ordered.size)
         val grouped = LinkedHashMap<String, MutableList<Medium>>()
 
         var lastDay: LocalDate? = null
         var lastLabel = ""
 
-        media.forEachIndexed { idx, item ->
+        ordered.forEachIndexed { idx, item ->
             val day = Instant.ofEpochMilli(item.dateTakenMs).atZone(zone).toLocalDate()
             val label = if (day == lastDay) {
                 lastLabel
@@ -480,15 +503,19 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
 
         return FlatFeedProjection(
-            items = media,
+            items = ordered,
             sections = sections,
             indexToPill = indexToPill,
             idToIndex = idToIndex
         )
     }
 
-    private fun buildSizeProjection(media: List<Medium>): FlatFeedProjection {
-        val sorted = media.sortedByDescending { it.sizeBytes }
+    private fun buildSizeProjection(media: List<Medium>, sortOrder: SortOrder): FlatFeedProjection {
+        val sorted = if (sortOrder == SortOrder.ASCENDING) {
+            media.sortedBy { it.sizeBytes }
+        } else {
+            media.sortedByDescending { it.sizeBytes }
+        }
         val buckets = LinkedHashMap<String, MutableList<Medium>>()
 
         for (item in sorted) {
@@ -524,19 +551,26 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
-    private fun buildFolderProjection(media: List<Medium>): FlatFeedProjection {
+    private fun buildFolderProjection(media: List<Medium>, sortOrder: SortOrder): FlatFeedProjection {
+        val orderedMedia = if (sortOrder == SortOrder.ASCENDING) media.sortedBy { it.dateTakenMs } else media
         val grouped = LinkedHashMap<String, MutableList<Medium>>()
-        for (item in media) {
+        for (item in orderedMedia) {
             val folder = item.bucketName.ifBlank { "Internal Storage" }
             grouped.getOrPut(folder) { ArrayList() }.add(item)
         }
 
-        val flatItems = ArrayList<Medium>(media.size)
-        val indexToPill = ArrayList<String>(media.size)
-        val idToIndex = HashMap<Long, Int>(media.size)
-        val sections = ArrayList<TimelineSection>(grouped.size)
+        val folderEntries = if (sortOrder == SortOrder.ASCENDING) {
+            grouped.entries.sortedBy { it.key.lowercase(Locale.ROOT) }
+        } else {
+            grouped.entries.toList()
+        }
 
-        for ((folder, list) in grouped) {
+        val flatItems = ArrayList<Medium>(orderedMedia.size)
+        val indexToPill = ArrayList<String>(orderedMedia.size)
+        val idToIndex = HashMap<Long, Int>(orderedMedia.size)
+        val sections = ArrayList<TimelineSection>(folderEntries.size)
+
+        for ((folder, list) in folderEntries) {
             sections.add(TimelineSection(title = "$folder · ${list.size}", pillLabel = folder, items = list))
             for (item in list) {
                 val flatIdx = flatItems.size

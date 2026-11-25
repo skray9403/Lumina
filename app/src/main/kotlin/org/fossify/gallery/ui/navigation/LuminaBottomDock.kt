@@ -46,6 +46,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
@@ -56,6 +57,7 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PhotoSizeSelectActual
 import androidx.compose.material.icons.filled.RestoreFromTrash
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.Icon
@@ -142,13 +144,18 @@ sealed interface DockMode {
 
     data class Selection(
         val selectedCount: Int,
+        val selectedMedia: List<Medium> = emptyList(),
         val isTrashMode: Boolean = false,
         val isVaultMode: Boolean = false,
-        val onShare: () -> Unit,
-        val onAddToAlbum: () -> Unit,
+        val isPickerMode: Boolean = false,
+        val onClearSelection: () -> Unit = {},
+        val onSelectAll: () -> Unit = {},
+        val onConfirmPick: () -> Unit = {},
+        val onAddToAlbum: () -> Unit = {},
         val onMoveToVault: () -> Unit = {},
         val onRestore: () -> Unit = {},
-        val onDelete: () -> Unit
+        val onUpnpCastClick: () -> Unit = {},
+        val onDelete: () -> Unit = {}
     ) : DockMode
 
     data class Viewer(
@@ -185,6 +192,14 @@ fun LuminaBottomDock(
         darkOverride = if (isViewer) true else null,
         colorSchemeOverride = if (isViewer) darkDynamicScheme else null
     )
+    val fabScheme = if (isViewer) darkDynamicScheme else MaterialTheme.colorScheme
+    var isSelectionShareMenuOpen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(mode is DockMode.Selection) {
+        if (mode !is DockMode.Selection) {
+            isSelectionShareMenuOpen = false
+        }
+    }
 
     val hiddenOffsetPx = with(density) { 128.dp.toPx() }
     val slideProgress by animateFloatAsState(
@@ -207,7 +222,9 @@ fun LuminaBottomDock(
 
     val barHeightPx = with(density) { DockHeight.roundToPx() }
     val slotGapPx = with(density) { SlotGap.roundToPx() }
+    val selectionMode = mode as? DockMode.Selection
     val hasTrailingSlot = mode is DockMode.Home ||
+        (mode is DockMode.Selection && !mode.isTrashMode && !mode.isVaultMode && !mode.isPickerMode) ||
         (mode is DockMode.Viewer && !mode.isTrashMode && !mode.isVaultMode)
 
     Box(
@@ -262,6 +279,25 @@ fun LuminaBottomDock(
             }
         }
 
+        AnimatedVisibility(
+            visible = selectionMode != null && visible && !isSelectionShareMenuOpen,
+            enter = fadeIn(tween(140)) + scaleIn(LuminaMotion.expressiveBouncy(), initialScale = 0.84f),
+            exit = fadeOut(tween(100)) + scaleOut(tween(110), targetScale = 0.86f),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = DockHeight + 12.dp)
+        ) {
+            val sel = selectionMode ?: return@AnimatedVisibility
+            SelectionCountPill(
+                selectedCount = sel.selectedCount,
+                showConfirmPick = sel.isPickerMode && sel.selectedCount > 0,
+                tokens = pillTokens,
+                onClearSelection = sel.onClearSelection,
+                onSelectAll = sel.onSelectAll,
+                onConfirmPick = sel.onConfirmPick
+            )
+        }
+
         Layout(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -311,10 +347,11 @@ fun LuminaBottomDock(
                             is DockMode.Selection -> SelectionDockContent(
                                 isTrashMode = targetMode.isTrashMode,
                                 isVaultMode = targetMode.isVaultMode,
-                                onShare = targetMode.onShare,
+                                isPickerMode = targetMode.isPickerMode,
                                 onAddToAlbum = targetMode.onAddToAlbum,
                                 onMoveToVault = targetMode.onMoveToVault,
                                 onRestore = targetMode.onRestore,
+                                onConfirmPick = targetMode.onConfirmPick,
                                 onDelete = targetMode.onDelete
                             )
 
@@ -333,37 +370,64 @@ fun LuminaBottomDock(
                 }
 
                 if (hasTrailingSlot) {
-                    when (mode) {
-                        is DockMode.Home -> MorphingSearchPill(
-                            searchProgress = searchProgress,
-                            isSearchActive = mode.isSearchActive,
-                            query = mode.searchQuery,
-                            placeholder = if (mode.activeAlbumName != null) {
-                                "Search in ${mode.activeAlbumName}..."
-                            } else {
-                                "Search photos, videos, albums..."
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        AnimatedContent(
+                            targetState = mode,
+                            contentKey = {
+                                when (it) {
+                                    is DockMode.Home -> "trailing_search"
+                                    is DockMode.Selection, is DockMode.Viewer -> "trailing_share"
+                                }
                             },
-                            expandedContainerColor = containerColor,
-                            contentColor = pillTokens.contentColor,
-                            secondaryColor = pillTokens.secondaryContentColor,
-                            border = pillTokens.border,
-                            shadowElevation = pillTokens.shadowElevation,
-                            onSearchOpen = mode.onSearchOpen,
-                            onSearchClose = mode.onSearchClose,
-                            onQueryChange = mode.onSearchQueryChange
-                        )
+                            transitionSpec = {
+                                (fadeIn(LuminaMotion.throughZeroEnter) +
+                                    scaleIn(LuminaMotion.throughZeroEnter, initialScale = 0.85f)) togetherWith
+                                    (fadeOut(LuminaMotion.throughZeroExit) +
+                                        scaleOut(LuminaMotion.throughZeroExit, targetScale = 0.85f))
+                            },
+                            label = "trailing_slot_morph"
+                        ) { targetMode ->
+                            when (targetMode) {
+                                is DockMode.Home -> MorphingSearchPill(
+                                    searchProgress = searchProgress,
+                                    isSearchActive = targetMode.isSearchActive,
+                                    query = targetMode.searchQuery,
+                                    placeholder = if (targetMode.activeAlbumName != null) {
+                                        "Search in ${targetMode.activeAlbumName}..."
+                                    } else {
+                                        "Search photos, videos, albums..."
+                                    },
+                                    expandedContainerColor = containerColor,
+                                    contentColor = pillTokens.contentColor,
+                                    secondaryColor = pillTokens.secondaryContentColor,
+                                    border = pillTokens.border,
+                                    shadowElevation = pillTokens.shadowElevation,
+                                    onSearchOpen = targetMode.onSearchOpen,
+                                    onSearchClose = targetMode.onSearchClose,
+                                    onQueryChange = targetMode.onSearchQueryChange
+                                )
 
-                        is DockMode.Viewer -> ExpressiveSmartShareFab(
-                            medium = mode.medium,
-                            dockVisible = visible,
-                            darkScheme = darkDynamicScheme,
-                            border = pillTokens.border,
-                            shadowElevation = pillTokens.shadowElevation,
-                            onUpnpCastClick = mode.onUpnpCastClick,
-                            onMenuOpenChange = onShareMenuOpenChange
-                        )
+                                is DockMode.Selection -> ExpressiveSmartShareFab(
+                                    mediaItems = targetMode.selectedMedia,
+                                    dockVisible = visible,
+                                    fabScheme = fabScheme,
+                                    border = pillTokens.border,
+                                    shadowElevation = pillTokens.shadowElevation,
+                                    onUpnpCastClick = targetMode.onUpnpCastClick,
+                                    onMenuOpenChange = { isSelectionShareMenuOpen = it }
+                                )
 
-                        is DockMode.Selection -> Unit
+                                is DockMode.Viewer -> ExpressiveSmartShareFab(
+                                    mediaItems = listOf(targetMode.medium),
+                                    dockVisible = visible,
+                                    fabScheme = darkDynamicScheme,
+                                    border = pillTokens.border,
+                                    shadowElevation = pillTokens.shadowElevation,
+                                    onUpnpCastClick = targetMode.onUpnpCastClick,
+                                    onMenuOpenChange = onShareMenuOpenChange
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -595,10 +659,113 @@ private fun MorphingSearchPill(
 }
 
 @Composable
+private fun SelectionCountPill(
+    selectedCount: Int,
+    showConfirmPick: Boolean,
+    tokens: org.fossify.gallery.ui.theme.LuminaPillTokens,
+    onClearSelection: () -> Unit,
+    onSelectAll: () -> Unit,
+    onConfirmPick: () -> Unit
+) {
+    val label = if (selectedCount == 1) "1 file selected" else "$selectedCount files selected"
+    Surface(
+        shape = CircleShape,
+        color = tokens.containerColor,
+        contentColor = tokens.contentColor,
+        border = tokens.border,
+        shadowElevation = 5.dp,
+        modifier = Modifier.height(40.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            val closeInteraction = remember { MutableInteractionSource() }
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .pressScale(closeInteraction, pressedScale = 0.88f)
+                    .clip(CircleShape)
+                    .clickable(
+                        interactionSource = closeInteraction,
+                        indication = ripple(bounded = true),
+                        role = Role.Button,
+                        onClick = onClearSelection
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Clear selection",
+                    tint = tokens.contentColor,
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = tokens.contentColor,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
+
+            val selectAllInteraction = remember { MutableInteractionSource() }
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .pressScale(selectAllInteraction, pressedScale = 0.88f)
+                    .clip(CircleShape)
+                    .clickable(
+                        interactionSource = selectAllInteraction,
+                        indication = ripple(bounded = true),
+                        role = Role.Button,
+                        onClick = onSelectAll
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.SelectAll,
+                    contentDescription = "Select all",
+                    tint = tokens.contentColor,
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+
+            if (showConfirmPick) {
+                val confirmInteraction = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .pressScale(confirmInteraction, pressedScale = 0.88f)
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = confirmInteraction,
+                            indication = ripple(bounded = true),
+                            role = Role.Button,
+                            onClick = onConfirmPick
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = "Confirm selection",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ExpressiveSmartShareFab(
-    medium: Medium,
+    mediaItems: List<Medium>,
     dockVisible: Boolean,
-    darkScheme: ColorScheme,
+    fabScheme: ColorScheme,
     border: BorderStroke,
     shadowElevation: Dp,
     onUpnpCastClick: () -> Unit,
@@ -609,12 +776,27 @@ private fun ExpressiveSmartShareFab(
     val haptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
 
+    val primaryMedium = mediaItems.firstOrNull()
+    val primaryMime = remember(mediaItems) {
+        when {
+            mediaItems.isEmpty() -> "*/*"
+            mediaItems.size == 1 -> mediaItems.first().mimeType
+            mediaItems.all { !it.isVideo } -> "image/*"
+            mediaItems.all { it.isVideo } -> "video/*"
+            else -> "*/*"
+        }
+    }
+    val selectionKey = remember(mediaItems) {
+        if (mediaItems.size == 1) mediaItems.first().id else mediaItems.size.toLong() * 31L + (primaryMedium?.id ?: 0L)
+    }
+
     var recentApps by remember { mutableStateOf<List<QuickShareTarget>>(emptyList()) }
-    val menuItems = remember(recentApps) {
-        listOf(QuickShareMenuItem.UpnpCast) + recentApps.take(3).map { QuickShareMenuItem.App(it) }
+    val menuItems = remember(recentApps, mediaItems.size) {
+        val appItems = recentApps.take(3).map { QuickShareMenuItem.App(it) }
+        if (mediaItems.isNotEmpty()) listOf(QuickShareMenuItem.UpnpCast) + appItems else appItems
     }
     val latestItems by rememberUpdatedState(menuItems)
-    val latestMedium by rememberUpdatedState(medium)
+    val latestMediaItems by rememberUpdatedState(mediaItems)
     val latestUpnpClick by rememberUpdatedState(onUpnpCastClick)
 
     var isQuickMenuOpen by remember { mutableStateOf(false) }
@@ -623,11 +805,11 @@ private fun ExpressiveSmartShareFab(
     var hoveredIndex by remember { mutableIntStateOf(-1) }
     var lastDismissTimeMs by remember { mutableLongStateOf(0L) }
 
-    LaunchedEffect(medium.mimeType) {
-        recentApps = RecentShareStore.loadRecentTargets(context, medium.mimeType, limit = 3)
+    LaunchedEffect(primaryMime) {
+        recentApps = RecentShareStore.loadRecentTargets(context, primaryMime, limit = 3)
     }
 
-    LaunchedEffect(medium.id) {
+    LaunchedEffect(selectionKey) {
         isQuickMenuOpen = false
         isMenuPinned = false
         hoveredIndex = -1
@@ -642,7 +824,7 @@ private fun ExpressiveSmartShareFab(
         }
     }
 
-    // Notify LuminaViewer so 1.6s video auto-hide pauses while Share overflow menu is open
+    // Notify LuminaViewer / Dock so auto-hide & floating selection pill react while Share overflow menu is open
     LaunchedEffect(isQuickMenuOpen) {
         onMenuOpenChange(isQuickMenuOpen)
     }
@@ -675,12 +857,12 @@ private fun ExpressiveSmartShareFab(
     }
 
     val fabBg by animateColorAsState(
-        targetValue = if (isQuickMenuOpen) darkScheme.primary else darkScheme.primaryContainer,
+        targetValue = if (isQuickMenuOpen) fabScheme.primary else fabScheme.primaryContainer,
         animationSpec = LuminaMotion.noBounceColor(),
         label = "share_fab_bg"
     )
     val fabTint by animateColorAsState(
-        targetValue = if (isQuickMenuOpen) darkScheme.onPrimary else darkScheme.onPrimaryContainer,
+        targetValue = if (isQuickMenuOpen) fabScheme.onPrimary else fabScheme.onPrimaryContainer,
         animationSpec = LuminaMotion.noBounceColor(),
         label = "share_fab_tint"
     )
@@ -696,7 +878,7 @@ private fun ExpressiveSmartShareFab(
         hoveredIndex = -1
         when (item) {
             QuickShareMenuItem.UpnpCast -> latestUpnpClick()
-            is QuickShareMenuItem.App -> RecentShareStore.shareDirectlyTo(context, latestMedium, item.target)
+            is QuickShareMenuItem.App -> RecentShareStore.shareDirectlyTo(context, latestMediaItems, item.target)
         }
     }
 
@@ -732,7 +914,7 @@ private fun ExpressiveSmartShareFab(
                             staggerIndex = logicalIdx,
                             isHovered = isHovered,
                             clickableEnabled = isMenuPinned,
-                            darkScheme = darkScheme,
+                            darkScheme = fabScheme,
                             height = itemHeightDp,
                             onClick = { executeItem(item) }
                         )
@@ -749,7 +931,7 @@ private fun ExpressiveSmartShareFab(
             modifier = Modifier
                 .size(DockHeight)
                 .pressScale(interactionSource, pressedScale = 0.88f)
-                .pointerInput(medium.id) {
+                .pointerInput(selectionKey) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val downPos = down.position
@@ -778,15 +960,17 @@ private fun ExpressiveSmartShareFab(
                         } == null
 
                         if (!timedOut) {
-                            if (!movedPastSlop) {
-                                RecentShareStore.launchNativeShareSheet(context, latestMedium)
+                            if (!movedPastSlop && latestMediaItems.isNotEmpty()) {
+                                RecentShareStore.launchNativeShareSheet(context, latestMediaItems)
                             }
                             return@awaitEachGesture
                         }
 
                         val items = latestItems
                         if (items.isEmpty()) {
-                            RecentShareStore.launchNativeShareSheet(context, latestMedium)
+                            if (latestMediaItems.isNotEmpty()) {
+                                RecentShareStore.launchNativeShareSheet(context, latestMediaItems)
+                            }
                             return@awaitEachGesture
                         }
 
@@ -1125,10 +1309,11 @@ private fun SlidingDockTab(
 private fun SelectionDockContent(
     isTrashMode: Boolean,
     isVaultMode: Boolean,
-    onShare: () -> Unit,
+    isPickerMode: Boolean,
     onAddToAlbum: () -> Unit,
     onMoveToVault: () -> Unit,
     onRestore: () -> Unit,
+    onConfirmPick: () -> Unit,
     onDelete: () -> Unit
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -1138,6 +1323,19 @@ private fun SelectionDockContent(
         verticalAlignment = Alignment.CenterVertically
     ) {
         when {
+            isPickerMode -> {
+                ConnectedActionPill(
+                    icon = Icons.Default.Check,
+                    label = "Done",
+                    contentDescription = "Confirm selection",
+                    containerColor = scheme.primaryContainer,
+                    contentColor = scheme.onPrimaryContainer,
+                    outerStartRadius = 24.dp,
+                    outerEndRadius = 24.dp,
+                    onClick = onConfirmPick
+                )
+            }
+
             isVaultMode -> {
                 ConnectedActionPill(
                     icon = Icons.Default.LockOpen,
@@ -1186,22 +1384,12 @@ private fun SelectionDockContent(
 
             else -> {
                 ConnectedActionPill(
-                    icon = Icons.Default.Share,
-                    label = null,
-                    contentDescription = "Share selected",
-                    containerColor = scheme.surfaceContainerHighest,
-                    contentColor = scheme.onSurface,
-                    outerStartRadius = 24.dp,
-                    outerEndRadius = 10.dp,
-                    onClick = onShare
-                )
-                ConnectedActionPill(
                     icon = Icons.Default.Add,
                     label = "Add to",
                     contentDescription = "Add selected to album",
                     containerColor = scheme.secondaryContainer,
                     contentColor = scheme.onSecondaryContainer,
-                    outerStartRadius = 10.dp,
+                    outerStartRadius = 24.dp,
                     outerEndRadius = 10.dp,
                     onClick = onAddToAlbum
                 )
