@@ -27,10 +27,8 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -62,7 +60,6 @@ fun AlbumsGrid(
     trashedCount: Int,
     onFavoritesClick: () -> Unit,
     onTrashClick: () -> Unit,
-    onLockedFolderClick: () -> Unit,
     onAlbumClick: (Directory) -> Unit,
     modifier: Modifier = Modifier,
     gridState: LazyGridState = rememberLazyGridState(),
@@ -89,85 +86,28 @@ fun AlbumsGrid(
             span = { GridItemSpan(maxLineSpan) },
             contentType = "smart_albums"
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    SmartAlbumTile(
-                        title = "Favorites",
-                        subtitle = "$favoriteCount",
-                        icon = Icons.Default.Favorite,
-                        badgeBg = MaterialTheme.colorScheme.primaryContainer,
-                        badgeTint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        onClick = onFavoritesClick,
-                        modifier = Modifier.weight(1f)
-                    )
-                    SmartAlbumTile(
-                        title = "Trash",
-                        subtitle = "$trashedCount",
-                        icon = Icons.Default.DeleteOutline,
-                        badgeBg = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f),
-                        badgeTint = MaterialTheme.colorScheme.onErrorContainer,
-                        onClick = onTrashClick,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                // Hardware StrongBox Locked Folder entry
-                val lockInteraction = remember { MutableInteractionSource() }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .pressScale(lockInteraction, pressedScale = 0.98f)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                        .clickable(
-                            interactionSource = lockInteraction,
-                            indication = ripple(bounded = true),
-                            role = Role.Button,
-                            onClick = onLockedFolderClick
-                        )
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.tertiaryContainer),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = "Locked Folder",
-                            tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Locked Folder",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "StrongBox encrypted · Biometric lock",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Icon(
-                        imageVector = Icons.Default.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                SmartAlbumTile(
+                    title = "Favorites",
+                    subtitle = "$favoriteCount",
+                    icon = Icons.Default.Favorite,
+                    badgeBg = MaterialTheme.colorScheme.primaryContainer,
+                    badgeTint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    onClick = onFavoritesClick,
+                    modifier = Modifier.weight(1f)
+                )
+                SmartAlbumTile(
+                    title = "Trash",
+                    subtitle = "$trashedCount",
+                    icon = Icons.Default.DeleteOutline,
+                    badgeBg = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f),
+                    badgeTint = MaterialTheme.colorScheme.onErrorContainer,
+                    onClick = onTrashClick,
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
 

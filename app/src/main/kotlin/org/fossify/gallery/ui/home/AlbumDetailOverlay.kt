@@ -1,7 +1,5 @@
 package org.fossify.gallery.ui.home
 
-import android.app.Activity
-import android.view.WindowManager
 import androidx.activity.BackEventCompat
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
@@ -24,13 +22,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,7 +38,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
@@ -56,7 +51,8 @@ import org.fossify.gallery.ui.theme.LuminaMotion
 fun AlbumDetailOverlay(
     albumName: String,
     isTrashOverlay: Boolean,
-    isVaultOverlay: Boolean,
+    isHiddenShown: Boolean,
+    hasHiddenFiles: Boolean,
     media: List<Medium>,
     sections: List<TimelineSection>,
     indexToDatePill: List<String>,
@@ -72,32 +68,20 @@ fun AlbumDetailOverlay(
     onGridRootOffsetChange: (Offset) -> Unit,
     enabledBack: Boolean,
     onMediaClick: (Medium) -> Unit,
-    onMediaLongClick: (Medium) -> Unit,
+    onMediaToggleSelect: (Medium) -> Unit,
     onSelectionChange: (Set<Long>) -> Unit,
     onColumnCountChange: (Int) -> Unit,
     onMediaFilterChange: (MediaFilter) -> Unit,
     onGroupByChange: (MediaGroupBy) -> Unit,
     onSortOrderChange: (SortOrder) -> Unit,
+    onToggleShowHidden: () -> Unit,
+    onUnlockAllHiddenToApps: () -> Unit,
     onRefresh: () -> Unit,
     onCloseComplete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val activity = context as? Activity
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-
-    // Block screenshots, screen recording, and Recents thumbnails while Locked Folder is open
-    DisposableEffect(isVaultOverlay, activity) {
-        if (isVaultOverlay) {
-            activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        }
-        onDispose {
-            if (isVaultOverlay) {
-                activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-            }
-        }
-    }
 
     val enterProgress = remember { Animatable(0f) }
     val backScale = remember { Animatable(1f) }
@@ -179,7 +163,6 @@ fun AlbumDetailOverlay(
                 ) {
                     Icon(
                         imageVector = when {
-                            isVaultOverlay -> Icons.Default.Lock
                             isTrashOverlay -> Icons.Default.DeleteOutline
                             albumName == "Favorites" -> Icons.Default.FavoriteBorder
                             else -> Icons.Default.PhotoLibrary
@@ -191,7 +174,6 @@ fun AlbumDetailOverlay(
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = when {
-                            isVaultOverlay -> "Locked Folder is empty"
                             isTrashOverlay -> "Trash is empty"
                             albumName == "Favorites" -> "No favorites yet"
                             else -> "No items in $albumName"
@@ -215,7 +197,7 @@ fun AlbumDetailOverlay(
                 onGridRootOffsetChange = onGridRootOffsetChange,
                 onColumnCountChange = onColumnCountChange,
                 onMediaClick = onMediaClick,
-                onMediaLongClick = onMediaLongClick,
+                onMediaToggleSelect = onMediaToggleSelect,
                 onSelectionChange = onSelectionChange,
                 contentPadding = gridContentPadding,
                 modifier = Modifier
@@ -236,11 +218,15 @@ fun AlbumDetailOverlay(
             groupBy = if (groupBy == MediaGroupBy.FOLDER) MediaGroupBy.DATE else groupBy,
             sortOrder = sortOrder,
             allowFolderGrouping = false,
+            isHiddenShown = isHiddenShown,
+            hasHiddenFiles = hasHiddenFiles,
             onBackClick = { animateClose() },
             onColumnCountChange = onColumnCountChange,
             onMediaFilterChange = onMediaFilterChange,
             onGroupByChange = onGroupByChange,
             onSortOrderChange = onSortOrderChange,
+            onToggleShowHidden = onToggleShowHidden,
+            onUnlockAllHiddenToApps = onUnlockAllHiddenToApps,
             onRefresh = onRefresh,
             modifier = Modifier.align(Alignment.TopCenter)
         )

@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
@@ -33,6 +34,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material3.Icon
@@ -71,6 +73,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -78,10 +81,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.fossify.gallery.engine.image.NativeThumbnailLoader
 import org.fossify.gallery.engine.image.rememberThumbnail
+import org.fossify.gallery.engine.vault.VaultManager
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.ui.theme.LuminaMotion
 import org.fossify.gallery.ui.theme.rememberLuminaPillTokens
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -115,8 +118,8 @@ fun MediaTimelineGrid(
     onGridRootOffsetChange: (Offset) -> Unit,
     onColumnCountChange: (Int) -> Unit,
     onMediaClick: (Medium) -> Unit,
-    onMediaLongClick: (Medium) -> Unit,
-    onSelectionChange: (Set<Long>) -> Unit = {},
+    onMediaToggleSelect: (Medium) -> Unit,
+    onSelectionChange: (Set<Long>) -> Unit,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(0.dp)
 ) {
@@ -124,101 +127,91 @@ fun MediaTimelineGrid(
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
     val clampedColumns = columnCount.coerceIn(2, 5)
+
+    val latestMedia by rememberUpdatedState(media)
+    val latestSelectedIds by rememberUpdatedState(selectedIds)
     val latestColumns by rememberUpdatedState(clampedColumns)
     val latestOnColumnsChange by rememberUpdatedState(onColumnCountChange)
-
-    val mediaIdToIndex = remember(media) {
-        HashMap<Long, Int>(media.size).apply {
-            media.forEachIndexed { index, item -> put(item.id, index) }
-        }
-    }
-    val latestMedia by rememberUpdatedState(media)
-    val latestMediaIdToIndex by rememberUpdatedState(mediaIdToIndex)
-    val latestSelectedIds by rememberUpdatedState(selectedIds)
     val latestOnSelectionChange by rememberUpdatedState(onSelectionChange)
-    val latestOnMediaLongClick by rememberUpdatedState(onMediaLongClick)
 
-    var gridViewportHeightPx by remember { mutableIntStateOf(0) }
+    val idToFlatIndex = remember(media) {
+        HashMap<Long, Int>(media.size).apply {
+            media.forEachIndexed { i, m -> put(m.id, i) }
+        }
+    }
+    val latestIdToFlatIndex by rememberUpdatedState(idToFlatIndex)
+
+    // Drag-to-select state (single grid-level detector -> zero per-tile gesture overhead)
+    var gridBoxSize by remember { mutableStateOf(IntSize.Zero) }
     var isDragSelecting by remember { mutableStateOf(false) }
-    var dragFingerPos by remember { mutableStateOf(Offset.Zero) }
-    var dragAnchorIdx by remember { mutableIntStateOf(-1) }
-    var dragSelectingOn by remember { mutableStateOf(true) }
-    var dragInitialIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
-    var lastAppliedHoverIdx by remember { mutableIntStateOf(-1) }
+    var dragPointerY by remember { mutableFloatStateOf(0f) }
+    var dragPointerX by remember { mutableFloatStateOf(0f) }
+    var dragAnchorIndex by remember { mutableIntStateOf(-1) }
+    var dragLastIndex by remember { mutableIntStateOf(-1) }
+    var dragBaseSelection by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var dragAddsSelection by remember { mutableStateOf(true) }
 
-    fun applyRangeSelection(hoverIdx: Int) {
-        val anchor = dragAnchorIdx
-        val curMedia = latestMedia
-        if (anchor < 0 || hoverIdx < 0 || curMedia.isEmpty()) return
-        val lo = min(anchor, hoverIdx).coerceIn(0, curMedia.lastIndex)
-        val hi = max(anchor, hoverIdx).coerceIn(0, curMedia.lastIndex)
-        val rangeIds = HashSet<Long>(hi - lo + 1)
-        for (i in lo..hi) {
-            rangeIds.add(curMedia[i].id)
-        }
-        val next = if (dragSelectingOn) {
-            dragInitialIds + rangeIds
-        } else {
-            dragInitialIds - rangeIds
-        }
-        if (next != latestSelectedIds) {
-            if (hoverIdx != lastAppliedHoverIdx && lastAppliedHoverIdx != -1) {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+    fun findMediaIndexAt(pos: Offset): Int {
+        val info = gridState.layoutInfo
+        for (item in info.visibleItemsInfo) {
+            val id = item.key as? Long ?: continue
+            val left = item.offset.x.toFloat()
+            val top = (item.offset.y - info.viewportStartOffset).toFloat()
+            if (pos.x in left..(left + item.size.width) && pos.y in top..(top + item.size.height)) {
+                return latestIdToFlatIndex[id] ?: -1
             }
-            latestOnSelectionChange(next)
         }
-        lastAppliedHoverIdx = hoverIdx
+        return -1
     }
 
-    LaunchedEffect(isDragSelecting, gridViewportHeightPx) {
-        if (!isDragSelecting || gridViewportHeightPx <= 0) return@LaunchedEffect
-        val topPadPx = with(density) { contentPadding.calculateTopPadding().toPx() }
-        val bottomPadPx = with(density) { contentPadding.calculateBottomPadding().toPx() }
-        val edgeZonePx = with(density) { 64.dp.toPx() }
-        val maxSpeedPx = with(density) { 28.dp.toPx() }
-        val topThreshold = (topPadPx + edgeZonePx * 0.55f).coerceAtMost(gridViewportHeightPx * 0.25f)
-        val bottomThreshold = (gridViewportHeightPx - bottomPadPx * 0.6f - edgeZonePx)
-            .coerceAtLeast(gridViewportHeightPx * 0.72f)
+    fun applyDragRange(currentIndex: Int) {
+        val anchor = dragAnchorIndex
+        val list = latestMedia
+        if (anchor !in list.indices || currentIndex !in list.indices) return
+        if (currentIndex == dragLastIndex) return
+        dragLastIndex = currentIndex
 
-        var lastFrameNanos = 0L
+        val start = min(anchor, currentIndex)
+        val end = max(anchor, currentIndex)
+        val next = dragBaseSelection.toMutableSet()
+        for (i in start..end) {
+            val id = list[i].id
+            if (dragAddsSelection) next.add(id) else next.remove(id)
+        }
+        latestOnSelectionChange(next)
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+    }
+
+    // Edge auto-scroll while drag-selecting near top or bottom 14% of viewport
+    val maxAutoScrollPxPerFrame = with(density) { 18.dp.toPx() }
+    LaunchedEffect(isDragSelecting) {
+        if (!isDragSelecting) return@LaunchedEffect
         while (isActive && isDragSelecting) {
-            val frameNanos = withFrameNanos { it }
-            val dtScale = if (lastFrameNanos == 0L) {
-                1f
-            } else {
-                ((frameNanos - lastFrameNanos) / 16_666_667f).coerceIn(0.4f, 2.5f)
-            }
-            lastFrameNanos = frameNanos
-
-            val fingerY = dragFingerPos.y
-            val deltaPx = when {
-                fingerY > bottomThreshold -> {
-                    val t = ((fingerY - bottomThreshold) / edgeZonePx).coerceIn(0f, 1f)
-                    (t * maxSpeedPx * dtScale).coerceAtLeast(4f)
+            withFrameNanos { }
+            val h = gridBoxSize.height.toFloat()
+            if (h <= 0f) continue
+            val topZone = h * 0.14f
+            val bottomZone = h * 0.86f
+            val delta = when {
+                dragPointerY < topZone -> {
+                    val ratio = ((topZone - dragPointerY) / topZone).coerceIn(0f, 1f)
+                    -maxAutoScrollPxPerFrame * ratio
                 }
-                fingerY < topThreshold -> {
-                    val t = ((topThreshold - fingerY) / edgeZonePx).coerceIn(0f, 1f)
-                    -(t * maxSpeedPx * dtScale).coerceAtLeast(4f)
+                dragPointerY > bottomZone -> {
+                    val ratio = ((dragPointerY - bottomZone) / (h - bottomZone)).coerceIn(0f, 1f)
+                    maxAutoScrollPxPerFrame * ratio
                 }
                 else -> 0f
             }
-
-            if (abs(deltaPx) > 0.5f) {
-                val consumed = gridState.scrollBy(deltaPx)
-                if (abs(consumed) > 0.5f) {
-                    val hover = findMediaIndexAtLocalOffset(
-                        gridState = gridState,
-                        mediaIdToIndex = latestMediaIdToIndex,
-                        pos = dragFingerPos
-                    )
-                    if (hover >= 0) {
-                        applyRangeSelection(hover)
-                    }
-                }
+            if (delta != 0f) {
+                gridState.scrollBy(delta)
+                val hit = findMediaIndexAt(Offset(dragPointerX, dragPointerY))
+                if (hit != -1) applyDragRange(hit)
             }
         }
     }
 
+    // 2-row lookahead thumbnail prefetching ahead of viewport
     LaunchedEffect(gridState, media, clampedColumns) {
         if (media.isEmpty()) return@LaunchedEffect
         val resolver = context.contentResolver
@@ -247,7 +240,8 @@ fun MediaTimelineGrid(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .onSizeChanged { gridViewportHeightPx = it.height }
+            .onSizeChanged { gridBoxSize = it }
+            // 2-finger pinch-to-zoom column count
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -256,7 +250,6 @@ fun MediaTimelineGrid(
 
                     do {
                         val event = awaitPointerEvent(pass = PointerEventPass.Initial)
-                        if (isDragSelecting) continue
                         val activePointers = event.changes.count { it.pressed }
                         if (activePointers >= 2) {
                             wasMultiTouch = true
@@ -286,77 +279,49 @@ fun MediaTimelineGrid(
                     } while (event.changes.any { it.pressed })
                 }
             }
-            .pointerInput(gridState) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                    val downPos = down.position
-                    var cancelled = false
+            // Long-press + drag contiguous range selection with edge auto-scroll
+            .pointerInput(Unit) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { startPos ->
+                        val hit = findMediaIndexAt(startPos)
+                        if (hit != -1) {
+                            val list = latestMedia
+                            val hitId = list[hit].id
+                            val base = latestSelectedIds
+                            val addMode = hitId !in base
 
-                    val timedOut = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-                        while (true) {
-                            val event = awaitPointerEvent(pass = PointerEventPass.Initial)
-                            if (event.changes.count { it.pressed } >= 2) {
-                                cancelled = true
-                                return@withTimeoutOrNull true
-                            }
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: event.changes.firstOrNull()
-                            if (change == null || !change.pressed) {
-                                cancelled = true
-                                return@withTimeoutOrNull true
-                            }
-                            if ((change.position - downPos).getDistance() > viewConfiguration.touchSlop) {
-                                cancelled = true
-                                return@withTimeoutOrNull true
-                            }
+                            dragAnchorIndex = hit
+                            dragLastIndex = hit
+                            dragBaseSelection = base
+                            dragAddsSelection = addMode
+                            dragPointerX = startPos.x
+                            dragPointerY = startPos.y
+                            isDragSelecting = true
+
+                            val updated = if (addMode) base + hitId else base - hitId
+                            latestOnSelectionChange(updated)
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         }
-                    } == null
-
-                    if (!timedOut || cancelled) return@awaitEachGesture
-
-                    val anchorIdx = findMediaIndexAtLocalOffset(
-                        gridState = gridState,
-                        mediaIdToIndex = latestMediaIdToIndex,
-                        pos = downPos
-                    )
-                    if (anchorIdx < 0) return@awaitEachGesture
-
-                    val anchorMedium = latestMedia.getOrNull(anchorIdx) ?: return@awaitEachGesture
-                    val initial = latestSelectedIds
-                    dragAnchorIdx = anchorIdx
-                    dragInitialIds = initial
-                    dragSelectingOn = anchorMedium.id !in initial
-                    lastAppliedHoverIdx = anchorIdx
-                    dragFingerPos = downPos
-                    isDragSelecting = true
-
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    if (latestMediaIdToIndex.isEmpty()) {
-                        latestOnMediaLongClick(anchorMedium)
-                    } else {
-                        applyRangeSelection(anchorIdx)
-                    }
-
-                    try {
-                        while (true) {
-                            val event = awaitPointerEvent(pass = PointerEventPass.Initial)
-                            event.changes.forEach { it.consume() }
-                            val active = event.changes.firstOrNull { it.pressed } ?: break
-                            dragFingerPos = active.position
-                            val hoverIdx = findMediaIndexAtLocalOffset(
-                                gridState = gridState,
-                                mediaIdToIndex = latestMediaIdToIndex,
-                                pos = active.position
-                            )
-                            if (hoverIdx >= 0) {
-                                applyRangeSelection(hoverIdx)
-                            }
-                        }
-                    } finally {
+                    },
+                    onDrag = { change, _ ->
+                        if (!isDragSelecting) return@detectDragGesturesAfterLongPress
+                        change.consume()
+                        dragPointerX = change.position.x
+                        dragPointerY = change.position.y
+                        val hit = findMediaIndexAt(change.position)
+                        if (hit != -1) applyDragRange(hit)
+                    },
+                    onDragEnd = {
                         isDragSelecting = false
-                        dragAnchorIdx = -1
-                        lastAppliedHoverIdx = -1
+                        dragAnchorIndex = -1
+                        dragLastIndex = -1
+                    },
+                    onDragCancel = {
+                        isDragSelecting = false
+                        dragAnchorIndex = -1
+                        dragLastIndex = -1
                     }
-                }
+                )
             }
     ) {
         LazyVerticalGrid(
@@ -400,8 +365,9 @@ fun MediaTimelineGrid(
                             isSelected = isSelected,
                             isMultiSelectMode = isMultiSelectMode,
                             isHidden = medium.id == hiddenMediaId,
+                            isLockedItem = VaultManager.isVaultMedium(medium),
                             onClick = {
-                                if (isMultiSelectMode) onMediaLongClick(medium) else onMediaClick(medium)
+                                if (isMultiSelectMode) onMediaToggleSelect(medium) else onMediaClick(medium)
                             }
                         )
                     }
@@ -418,18 +384,19 @@ fun MediaTimelineGrid(
                         isSelected = isSelected,
                         isMultiSelectMode = isMultiSelectMode,
                         isHidden = medium.id == hiddenMediaId,
+                        isLockedItem = VaultManager.isVaultMedium(medium),
                         onClick = {
-                            if (isMultiSelectMode) onMediaLongClick(medium) else onMediaClick(medium)
+                            if (isMultiSelectMode) onMediaToggleSelect(medium) else onMediaClick(medium)
                         }
                     )
                 }
             }
         }
 
-        if (media.size >= 36) {
+        if (media.size >= 36 && !isDragSelecting) {
             FastScrollOverlay(
                 gridState = gridState,
-                totalItems = media.size,
+                totalItems = indexToDatePill.size.coerceAtLeast(media.size),
                 indexToDatePill = indexToDatePill,
                 topInset = contentPadding.calculateTopPadding() + 8.dp,
                 bottomInset = contentPadding.calculateBottomPadding() + 8.dp,
@@ -585,54 +552,13 @@ private fun FastScrollOverlay(
     }
 }
 
-private fun findMediaIndexAtLocalOffset(
-    gridState: LazyGridState,
-    mediaIdToIndex: Map<Long, Int>,
-    pos: Offset
-): Int {
-    val info = gridState.layoutInfo
-    var bestIdx = -1
-    var bestDistSq = Float.MAX_VALUE
-    val maxGapDistSq = 64f * 64f
-
-    for (item in info.visibleItemsInfo) {
-        val mediaId = item.key as? Long ?: continue
-        val idx = mediaIdToIndex[mediaId] ?: continue
-        val left = item.offset.x.toFloat()
-        val top = (item.offset.y - info.viewportStartOffset).toFloat()
-        val right = left + item.size.width.toFloat()
-        val bottom = top + item.size.height.toFloat()
-
-        if (pos.x in left..right && pos.y in top..bottom) {
-            return idx
-        }
-
-        val dx = when {
-            pos.x < left -> left - pos.x
-            pos.x > right -> pos.x - right
-            else -> 0f
-        }
-        val dy = when {
-            pos.y < top -> top - pos.y
-            pos.y > bottom -> pos.y - bottom
-            else -> 0f
-        }
-        val distSq = dx * dx + dy * dy
-        if (distSq < bestDistSq) {
-            bestDistSq = distSq
-            bestIdx = idx
-        }
-    }
-
-    return if (bestDistSq <= maxGapDistSq) bestIdx else -1
-}
-
 @Composable
 private fun TimelineMediaItem(
     medium: Medium,
     isSelected: Boolean,
     isMultiSelectMode: Boolean,
     isHidden: Boolean,
+    isLockedItem: Boolean,
     onClick: () -> Unit
 ) {
     val thumbnailBitmap = rememberThumbnail(medium, sizePx = NativeThumbnailLoader.DEFAULT_THUMB_PX)
@@ -677,6 +603,23 @@ private fun TimelineMediaItem(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
+            }
+
+            if (isLockedItem) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .background(Color.Black.copy(alpha = 0.68f), CircleShape)
+                        .padding(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = "Encrypted hidden item",
+                        tint = Color.White,
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
             }
 
             if (medium.isVideo) {

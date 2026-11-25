@@ -1,8 +1,10 @@
 package org.fossify.gallery.ui.home
 
 import android.Manifest
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -37,10 +39,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +56,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import org.fossify.gallery.engine.vault.VaultManager
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.ui.navigation.DockScrollState
@@ -68,12 +73,78 @@ fun LuminaHomeScreen(
     onAlbumGridRootOffsetChange: (Offset) -> Unit,
     hiddenMediaId: Long?,
     isViewerOpen: Boolean,
-    onMediaClick: (Medium, Boolean, Boolean, Boolean) -> Unit,
+    onMediaClick: (Medium, Boolean, Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val activity = context as? Activity
     val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // Automatically protect screen with FLAG_SECURE whenever encrypted hidden items are visible inline
+    DisposableEffect(state.isHiddenShown, activity) {
+        if (state.isHiddenShown) {
+            activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        onDispose {
+            if (state.isHiddenShown) {
+                activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
+        }
+    }
+
+    val hasHiddenOnDisk = remember(state.isHiddenShown, state.vaultMedia.size, state.allMedia.size) {
+        VaultManager.hasEncryptedFiles(context)
+    }
+
+    fun toggleShowHiddenInline() {
+        if (state.isHiddenShown) {
+            VaultManager.lock()
+            Toast.makeText(context, "Hidden items locked", Toast.LENGTH_SHORT).show()
+        } else {
+            VaultManager.unlock(
+                context = context,
+                title = "Show Hidden Items",
+                subtitle = "Verify identity to view encrypted items in your gallery"
+            ) { ok, err ->
+                if (ok) {
+                    val count = VaultManager.vaultMedia.value.size
+                    val msg = if (count > 0) "Showing $count hidden item(s)" else "No hidden items yet"
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                } else if (!err.isNullOrBlank()) {
+                    Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    fun unlockAllHiddenToApps() {
+        VaultManager.unlock(
+            context = context,
+            title = "Unlock All Hidden to Apps",
+            subtitle = "Decrypt and restore all hidden media to device storage"
+        ) { ok, err ->
+            if (!ok) {
+                if (!err.isNullOrBlank()) Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+                return@unlock
+            }
+            scope.launch {
+                val restored = VaultManager.unlockAllToGallery(context)
+                VaultManager.lock()
+                if (restored > 0) {
+                    viewModel.refresh()
+                    Toast.makeText(
+                        context,
+                        "Unlocked $restored item(s) for all apps",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Toast.makeText(context, "No hidden items to unlock", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     fun hasAnyMediaAccess(): Boolean {
         val fullImages = ContextCompat.checkSelfPermission(
@@ -192,9 +263,9 @@ fun LuminaHomeScreen(
                             hiddenMediaId = if (state.activeAlbumId == null) hiddenMediaId else null,
                             onGridRootOffsetChange = onPhotosGridRootOffsetChange,
                             onColumnCountChange = { viewModel.setColumnCount(it) },
-                            onMediaClick = { medium -> onMediaClick(medium, false, false, false) },
-                            onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
-                            onSelectionChange = { viewModel.setSelection(it) },
+                            onMediaClick = { medium -> onMediaClick(medium, false, false) },
+                            onMediaToggleSelect = { medium -> viewModel.toggleSelection(medium.id) },
+                            onSelectionChange = { ids -> viewModel.setSelectedIds(ids) },
                             contentPadding = gridContentPadding
                         )
                     }
@@ -207,15 +278,6 @@ fun LuminaHomeScreen(
                         trashedCount = state.trashedMedia.size,
                         onFavoritesClick = { viewModel.openFavorites() },
                         onTrashClick = { viewModel.openTrash() },
-                        onLockedFolderClick = {
-                            VaultManager.unlock(context) { ok, err ->
-                                if (ok) {
-                                    viewModel.openVault()
-                                } else if (!err.isNullOrBlank()) {
-                                    Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        },
                         onAlbumClick = { album -> viewModel.openAlbum(album) },
                         gridState = albumsGridState,
                         contentPadding = gridContentPadding
@@ -238,10 +300,14 @@ fun LuminaHomeScreen(
                 groupBy = state.groupBy,
                 sortOrder = state.sortOrder,
                 allowFolderGrouping = state.selectedTab == GalleryTab.PHOTOS,
+                isHiddenShown = state.isHiddenShown,
+                hasHiddenFiles = hasHiddenOnDisk,
                 onColumnCountChange = { viewModel.setColumnCount(it) },
                 onMediaFilterChange = { viewModel.setMediaFilter(it) },
                 onGroupByChange = { viewModel.setGroupBy(it) },
                 onSortOrderChange = { viewModel.setSortOrder(it) },
+                onToggleShowHidden = ::toggleShowHiddenInline,
+                onUnlockAllHiddenToApps = ::unlockAllHiddenToApps,
                 onRefresh = { viewModel.refresh() },
                 modifier = Modifier.align(Alignment.TopCenter)
             )
@@ -251,7 +317,8 @@ fun LuminaHomeScreen(
             AlbumDetailOverlay(
                 albumName = state.activeAlbumName ?: "Album",
                 isTrashOverlay = state.isTrashOverlay,
-                isVaultOverlay = state.isVaultOverlay,
+                isHiddenShown = state.isHiddenShown,
+                hasHiddenFiles = hasHiddenOnDisk,
                 media = state.albumMedia,
                 sections = state.albumSections,
                 indexToDatePill = state.albumIndexToDatePill,
@@ -266,15 +333,15 @@ fun LuminaHomeScreen(
                 hiddenMediaId = hiddenMediaId,
                 onGridRootOffsetChange = onAlbumGridRootOffsetChange,
                 enabledBack = !isViewerOpen && !state.isMultiSelectMode && !state.isSearchActive,
-                onMediaClick = { medium ->
-                    onMediaClick(medium, true, state.isTrashOverlay, state.isVaultOverlay)
-                },
-                onMediaLongClick = { medium -> viewModel.toggleSelection(medium.id) },
-                onSelectionChange = { viewModel.setSelection(it) },
+                onMediaClick = { medium -> onMediaClick(medium, true, state.isTrashOverlay) },
+                onMediaToggleSelect = { medium -> viewModel.toggleSelection(medium.id) },
+                onSelectionChange = { ids -> viewModel.setSelectedIds(ids) },
                 onColumnCountChange = { viewModel.setColumnCount(it) },
                 onMediaFilterChange = { viewModel.setMediaFilter(it) },
                 onGroupByChange = { viewModel.setGroupBy(it) },
                 onSortOrderChange = { viewModel.setSortOrder(it) },
+                onToggleShowHidden = ::toggleShowHiddenInline,
+                onUnlockAllHiddenToApps = ::unlockAllHiddenToApps,
                 onRefresh = { viewModel.refresh() },
                 onCloseComplete = { viewModel.closeAlbum() },
                 modifier = Modifier.fillMaxSize()

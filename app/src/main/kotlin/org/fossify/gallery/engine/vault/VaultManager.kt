@@ -67,6 +67,13 @@ object VaultManager {
         }
     }
 
+    fun isVaultMedium(medium: Medium): Boolean = medium.uri.scheme == VaultCrypto.VAULT_SCHEME
+
+    fun hasEncryptedFiles(context: Context): Boolean {
+        val dir = File(context.applicationContext.noBackupFilesDir, "vault")
+        return dir.listFiles()?.any { it.name.startsWith("item_") && it.name.endsWith(".enc") } == true
+    }
+
     fun vaultUriFor(id: Long): Uri = Uri.parse("${VaultCrypto.VAULT_SCHEME}://item/$id")
 
     fun parseVaultId(uri: Uri): Long? {
@@ -80,13 +87,10 @@ object VaultManager {
     private fun itemFile(context: Context, id: Long): File = File(vaultDir(context), "item_$id.enc")
     private fun thumbFile(context: Context, id: Long): File = File(vaultDir(context), "thumb_$id.enc")
 
-    /**
-     * Prompts StrongBox-bound BiometricPrompt (or Device Credential) and loads the decrypted vault index.
-     */
     fun unlock(
         context: Context,
-        title: String = "Unlock Locked Folder",
-        subtitle: String = "Verify identity to access encrypted items",
+        title: String = "Show Hidden Items",
+        subtitle: String = "Verify identity to decrypt hidden media",
         onResult: (Boolean, String?) -> Unit
     ) {
         init(context)
@@ -118,7 +122,6 @@ object VaultManager {
         }
     }
 
-    /** Zeroizes the in-memory DEK and evicts all decrypted vault thumbnails immediately. */
     fun lock() {
         activeDek?.fill(0)
         activeDek = null
@@ -167,11 +170,6 @@ object VaultManager {
         }
     }
 
-    /**
-     * Encrypts selected MediaStore items + 360px thumbnails into the private StrongBox vault.
-     * Returns the list of original URIs that encrypted & fsynced cleanly so the caller can request
-     * MediaStore.createDeleteRequest() to permanently remove plaintext originals.
-     */
     suspend fun importFromMediaStore(context: Context, sources: List<Medium>): List<Uri> = withContext(Dispatchers.IO) {
         init(context)
         ioMutex.withLock {
@@ -192,7 +190,6 @@ object VaultManager {
                             VaultCrypto.encryptStream(input, destFile, vaultId, dek)
                         } ?: continue
 
-                        // Generate & encrypt 360px thumbnail for zero-lag vault grid rendering
                         try {
                             val bmp = resolver.loadThumbnail(src.uri, Size(360, 360), null)
                             val baos = ByteArrayOutputStream()
@@ -209,7 +206,7 @@ object VaultManager {
                                 uri = vaultUriFor(vaultId),
                                 sizeBytes = encryptedSize,
                                 bucketId = -2001L,
-                                bucketName = "Locked Folder",
+                                bucketName = src.bucketName.ifBlank { "Hidden" },
                                 isFavorite = false
                             )
                         )
@@ -231,9 +228,12 @@ object VaultManager {
         }
     }
 
-    /**
-     * Streams decrypted files directly back to MediaStore and removes encrypted copies on success.
-     */
+    suspend fun unlockAllToGallery(context: Context): Int {
+        val current = _vaultMedia.value
+        if (current.isEmpty()) return 0
+        return unlockItemsToGallery(context, current)
+    }
+
     suspend fun unlockItemsToGallery(context: Context, items: List<Medium>): Int = withContext(Dispatchers.IO) {
         init(context)
         ioMutex.withLock {
@@ -346,7 +346,7 @@ object VaultManager {
         val used = existing.mapTo(HashSet()) { it.id }
         var id: Long
         do {
-            id = (random.nextLong() and Long.MAX_VALUE).coerceAtLeast(1L)
+            id = -(random.nextLong() and Long.MAX_VALUE).coerceAtLeast(100_000L)
         } while (id in used)
         return id
     }
@@ -375,7 +375,7 @@ object VaultManager {
                         dateModifiedMs = o.optLong("mod", 0L),
                         sizeBytes = o.optLong("size", 0L),
                         bucketId = -2001L,
-                        bucketName = "Locked Folder",
+                        bucketName = o.optString("bucket", "Hidden"),
                         relativePath = o.optString("path", ""),
                         isFavorite = false,
                         isVideo = o.optBoolean("video", false),
@@ -404,6 +404,7 @@ object VaultManager {
                     put("taken", m.dateTakenMs)
                     put("mod", m.dateModifiedMs)
                     put("size", m.sizeBytes)
+                    put("bucket", m.bucketName)
                     put("path", m.relativePath)
                     put("video", m.isVideo)
                     put("anim", m.isAnimated)
@@ -429,11 +430,8 @@ object VaultManager {
     }
 }
 
-/**
- * Zero-temp-file ExoPlayer DataSource for O(1) random-access playback of chunked AES-256-GCM vault videos.
- */
 @UnstableApi
-private class VaultVideoDataSource : BaseDataSource(/* isNetwork = */ false) {
+private class VaultVideoDataSource : BaseDataSource(false) {
     private var currentUri: Uri? = null
     private var raf: RandomAccessFile? = null
     private var header: VaultFileHeader? = null
@@ -449,7 +447,7 @@ private class VaultVideoDataSource : BaseDataSource(/* isNetwork = */ false) {
         val uri = dataSpec.uri
         val id = VaultManager.parseVaultId(uri) ?: throw IOException("Invalid vault URI: $uri")
         val (file, dek) = VaultManager.openEncryptedFileAndDek(id)
-            ?: throw IOException("Vault is locked or file missing")
+            ?: throw IOException("Hidden storage is locked or file missing")
 
         try {
             val openedRaf = RandomAccessFile(file, "r")

@@ -6,6 +6,7 @@ import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeIn
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -65,6 +67,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.fossify.gallery.engine.image.NativeThumbnailLoader
+import org.fossify.gallery.engine.vault.VaultManager
 import org.fossify.gallery.engine.video.PlayerPool
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.ui.data.LuminaMediaRepository
@@ -83,9 +86,10 @@ fun LuminaViewer(
     initialSourceRect: Rect?,
     viewModel: ViewerViewModel,
     repository: LuminaMediaRepository,
+    useLightChrome: Boolean = false,
     isShareMenuOpen: Boolean = false,
-    isVaultMode: Boolean = false,
-    onMoveToVault: ((Medium) -> Unit)? = null,
+    isTrashMode: Boolean = false,
+    onHideItem: ((Medium) -> Unit)? = null,
     onPageChanged: (Int) -> Unit,
     onPrepareReturnRect: suspend (Long) -> Rect?,
     onHiddenGridIdChange: (Long?) -> Unit,
@@ -147,9 +151,7 @@ fun LuminaViewer(
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) {
-                    isVideoPlaying = false
-                }
+                if (playbackState == Player.STATE_ENDED) isVideoPlaying = false
             }
         }
         player.addListener(listener)
@@ -170,8 +172,16 @@ fun LuminaViewer(
     }
 
     val currentMedium = mediaList.getOrNull(pagerState.currentPage) ?: mediaList.first()
+    val isCurrentVaultItem = VaultManager.isVaultMedium(currentMedium)
 
-    // Pause video dock auto-hide whenever paused, scrubbing, details open, or Share overflow menu open
+    // Light canvas & light chrome only when Light Mode + bright photo + chrome visible (Apple/Google Photos behavior)
+    val effectiveLightChrome = useLightChrome && !currentMedium.isVideo && state.isChromeVisible
+    val canvasBgColor by animateColorAsState(
+        targetValue = if (effectiveLightChrome) MaterialTheme.colorScheme.background else Color.Black,
+        animationSpec = LuminaMotion.noBounceColor(),
+        label = "viewer_canvas_bg"
+    )
+
     LaunchedEffect(
         currentMedium.id,
         currentMedium.isVideo,
@@ -225,16 +235,13 @@ fun LuminaViewer(
         state.pendingIntentRequest?.let { actionLauncher.launch(it) }
     }
 
+    // Save original bar icon appearance once & restore on viewer exit
     DisposableEffect(activity) {
         val window = activity?.window
         val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
         val prevLightStatus = controller?.isAppearanceLightStatusBars ?: false
         val prevLightNav = controller?.isAppearanceLightNavigationBars ?: false
-        controller?.apply {
-            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            isAppearanceLightStatusBars = false
-            isAppearanceLightNavigationBars = false
-        }
+        controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         onDispose {
             controller?.apply {
                 show(WindowInsetsCompat.Type.systemBars())
@@ -244,9 +251,12 @@ fun LuminaViewer(
         }
     }
 
-    LaunchedEffect(state.isChromeVisible, activity) {
+    // Dynamically sync status/nav bar icon color & visibility with active photo luminance
+    LaunchedEffect(state.isChromeVisible, effectiveLightChrome, activity) {
         activity?.window?.let { window ->
             val controller = WindowCompat.getInsetsController(window, window.decorView)
+            controller.isAppearanceLightStatusBars = effectiveLightChrome
+            controller.isAppearanceLightNavigationBars = effectiveLightChrome
             if (state.isChromeVisible) controller.show(WindowInsetsCompat.Type.systemBars())
             else controller.hide(WindowInsetsCompat.Type.systemBars())
         }
@@ -358,7 +368,7 @@ fun LuminaViewer(
         modifier = modifier
             .fillMaxSize()
             .onSizeChanged { viewportSize = it }
-            .drawBehind { drawRect(Color.Black.copy(alpha = backdropAlpha.value.coerceIn(0f, 1f))) }
+            .drawBehind { drawRect(canvasBgColor.copy(alpha = backdropAlpha.value.coerceIn(0f, 1f))) }
     ) {
         HorizontalPager(
             state = pagerState,
@@ -412,6 +422,7 @@ fun LuminaViewer(
             } else {
                 PhotoPage(
                     medium = medium,
+                    useLightChrome = effectiveLightChrome,
                     onSingleTap = { viewModel.toggleChrome() },
                     onEdgeSwipeHandoff = { canPagerSwipe = it },
                     onVerticalDismissDrag = onDrag,
@@ -463,7 +474,11 @@ fun LuminaViewer(
             }
         }
 
-        // Single continuous bottom scrim anchored flush to 0.dp physical bottom edge (fixes light seam)
+        // Adaptive bottom scrim anchored flush to 0.dp physical bottom edge (light in Light Mode on bright photos, dark otherwise)
+        val bottomScrimBase = if (effectiveLightChrome) MaterialTheme.colorScheme.background else Color.Black
+        val bottomScrimMidAlpha = if (effectiveLightChrome) 0.42f else 0.34f
+        val bottomScrimEndAlpha = if (effectiveLightChrome) 0.78f else 0.84f
+
         AnimatedVisibility(
             visible = showChrome && !state.isDetailsSheetOpen,
             enter = fadeIn(LuminaMotion.contentEnter),
@@ -477,9 +492,9 @@ fun LuminaViewer(
                     .drawWithCache {
                         val scrim = Brush.verticalGradient(
                             0.0f to Color.Transparent,
-                            0.35f to Color.Black.copy(alpha = 0.34f),
-                            0.72f to Color.Black.copy(alpha = 0.68f),
-                            1.0f to Color.Black.copy(alpha = 0.84f)
+                            0.35f to bottomScrimBase.copy(alpha = bottomScrimMidAlpha),
+                            0.72f to bottomScrimBase.copy(alpha = bottomScrimEndAlpha * 0.82f),
+                            1.0f to bottomScrimBase.copy(alpha = bottomScrimEndAlpha)
                         )
                         onDrawBehind { drawRect(brush = scrim) }
                     }
@@ -495,10 +510,15 @@ fun LuminaViewer(
             ViewerTopBar(
                 medium = currentMedium,
                 isFavorite = currentMedium.isFavorite,
-                isVaultMode = isVaultMode,
+                isVaultMode = isCurrentVaultItem,
+                useLightChrome = effectiveLightChrome,
                 onFavoriteToggle = { viewModel.toggleFavorite(repository, currentMedium) },
                 onDetailsClick = { openDetailsSheet() },
-                onMoveToVaultClick = onMoveToVault?.let { cb -> { cb(currentMedium) } },
+                onHideClick = if (!isCurrentVaultItem && !isTrashMode) {
+                    onHideItem?.let { cb -> { cb(currentMedium) } }
+                } else {
+                    null
+                },
                 onBack = { triggerAnimatedClose() },
                 modifier = Modifier.fillMaxWidth()
             )

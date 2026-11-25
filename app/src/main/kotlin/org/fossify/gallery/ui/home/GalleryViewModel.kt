@@ -81,8 +81,8 @@ data class GalleryUiState(
     val favoriteCount: Int = 0,
     val trashedMedia: List<Medium> = emptyList(),
     val vaultMedia: List<Medium> = emptyList(),
+    val isHiddenShown: Boolean = false,
     val isTrashOverlay: Boolean = false,
-    val isVaultOverlay: Boolean = false,
     val isSearchActive: Boolean = false
 )
 
@@ -112,7 +112,6 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     companion object {
         const val FAVORITES_BUCKET_ID = -1001L
         const val TRASH_BUCKET_ID = -1002L
-        const val VAULT_BUCKET_ID = -2001L
     }
 
     val repository = LuminaMediaRepository(application)
@@ -139,21 +138,24 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         rawMedia,
         rawTrashed,
         VaultManager.vaultMedia,
+        VaultManager.isUnlocked,
         inputs
-    ) { media, trashed, vault, inp ->
+    ) { media, trashed, vault, vaultUnlocked, inp ->
+        // When unlocked, merge encrypted hidden items inline into the unified feed (never during external picker)
+        val combinedRaw = if (vaultUnlocked && vault.isNotEmpty() && inp.pickerMimeType == null) {
+            (media + vault).sortedByDescending { it.dateTakenMs }
+        } else {
+            media
+        }
+
         val pickerFiltered = when {
-            inp.pickerMimeType == null || inp.pickerMimeType == "*/*" -> media
-            inp.pickerMimeType.startsWith("image/") -> media.filter { !it.isVideo }
-            inp.pickerMimeType.startsWith("video/") -> media.filter { it.isVideo }
-            else -> media
+            inp.pickerMimeType == null || inp.pickerMimeType == "*/*" -> combinedRaw
+            inp.pickerMimeType.startsWith("image/") -> combinedRaw.filter { !it.isVideo }
+            inp.pickerMimeType.startsWith("video/") -> combinedRaw.filter { it.isVideo }
+            else -> combinedRaw
         }
 
-        val typeFiltered = when (inp.mediaFilter) {
-            MediaFilter.ALL -> pickerFiltered
-            MediaFilter.PHOTOS -> pickerFiltered.filter { !it.isVideo }
-            MediaFilter.VIDEOS -> pickerFiltered.filter { it.isVideo }
-        }
-
+        val typeFiltered = applyMediaFilter(pickerFiltered, inp.mediaFilter)
         val albums = repository.extractDirectories(typeFiltered)
         val favoriteCount = typeFiltered.count { it.isFavorite }
 
@@ -165,12 +167,10 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         val mainProj = buildProjection(mainFiltered, effectiveMainGroup, inp.sortOrder)
 
         val isTrashOverlay = inp.activeAlbumId == TRASH_BUCKET_ID
-        val isVaultOverlay = inp.activeAlbumId == VAULT_BUCKET_ID
         val albumFiltered = when (inp.activeAlbumId) {
             null -> emptyList()
             FAVORITES_BUCKET_ID -> applySearch(typeFiltered.filter { it.isFavorite }, inp.searchQuery)
             TRASH_BUCKET_ID -> applySearch(applyMediaFilter(trashed, inp.mediaFilter), inp.searchQuery)
-            VAULT_BUCKET_ID -> applySearch(applyMediaFilter(vault, inp.mediaFilter), inp.searchQuery)
             else -> applySearch(typeFiltered.filter { it.bucketId == inp.activeAlbumId }, inp.searchQuery)
         }
         val effectiveAlbumGroup = if (inp.groupBy == MediaGroupBy.SIZE) MediaGroupBy.SIZE else MediaGroupBy.DATE
@@ -179,13 +179,12 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         val resolvedAlbumName = when (inp.activeAlbumId) {
             FAVORITES_BUCKET_ID -> "Favorites"
             TRASH_BUCKET_ID -> "Trash"
-            VAULT_BUCKET_ID -> "Locked Folder"
             else -> inp.activeAlbumName
                 ?: inp.activeAlbumId?.let { id -> albums.firstOrNull { it.bucketId == id }?.name }
         }
 
         GalleryUiState(
-            allMedia = media,
+            allMedia = combinedRaw,
             timelineSections = if (inp.activeAlbumId != null) albumProj.sections else mainProj.sections,
             visibleSections = mainProj.sections,
             albumSections = albumProj.sections,
@@ -210,8 +209,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             favoriteCount = favoriteCount,
             trashedMedia = trashed,
             vaultMedia = vault,
+            isHiddenShown = vaultUnlocked,
             isTrashOverlay = isTrashOverlay,
-            isVaultOverlay = isVaultOverlay,
             isSearchActive = inp.isSearchActive
         )
     }
@@ -291,18 +290,6 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun openVault() {
-        inputs.update {
-            it.copy(
-                activeAlbumId = VAULT_BUCKET_ID,
-                activeAlbumName = "Locked Folder",
-                searchQuery = "",
-                isSearchActive = false,
-                selectedIds = emptySet()
-            )
-        }
-    }
-
     fun closeAlbum() {
         inputs.update {
             it.copy(
@@ -353,10 +340,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun setSelection(ids: Set<Long>) {
-        inputs.update { current ->
-            if (current.selectedIds == ids) current else current.copy(selectedIds = ids)
-        }
+    fun setSelectedIds(ids: Set<Long>) {
+        inputs.update { it.copy(selectedIds = ids) }
     }
 
     fun selectAll() {
@@ -377,7 +362,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         onComplete: (Int) -> Unit = {}
     ) {
         viewModelScope.launch {
-            val copied = repository.copyMediaToAlbum(items, albumName, targetRelativePath)
+            val publicOnly = items.filterNot { VaultManager.isVaultMedium(it) }
+            val copied = repository.copyMediaToAlbum(publicOnly, albumName, targetRelativePath)
             if (copied > 0) {
                 rawMedia.value = repository.queryAllMedia()
             }
@@ -392,14 +378,16 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun selectedUrisFromActiveSource(): List<Uri> {
+    private fun selectedPublicUris(): List<Uri> {
         val state = uiState.value
         val source = if (state.isTrashOverlay) state.trashedMedia else state.allMedia
-        return source.filter { it.id in state.selectedIds }.map { it.uri }
+        return source
+            .filter { it.id in state.selectedIds && !VaultManager.isVaultMedium(it) }
+            .map { it.uri }
     }
 
     fun deleteSelected() {
-        val uris = selectedUrisFromActiveSource()
+        val uris = selectedPublicUris()
         if (uris.isNotEmpty()) {
             val req = repository.createDeleteRequest(uris)
             inputs.update { it.copy(pendingIntentRequest = req) }
@@ -409,7 +397,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     fun deleteSelectedPermanently() = deleteSelected()
 
     fun trashSelected(isTrash: Boolean = true) {
-        val uris = selectedUrisFromActiveSource()
+        val uris = selectedPublicUris()
         if (uris.isNotEmpty()) {
             val req = repository.createTrashRequest(uris, isTrash)
             inputs.update { it.copy(pendingIntentRequest = req) }
@@ -419,7 +407,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     fun restoreSelected() = trashSelected(isTrash = false)
 
     fun favoriteSelected(isFavorite: Boolean) {
-        val uris = selectedUrisFromActiveSource()
+        val uris = selectedPublicUris()
         if (uris.isNotEmpty()) {
             val req = repository.createFavoriteRequest(uris, isFavorite)
             inputs.update { it.copy(pendingIntentRequest = req) }
@@ -453,7 +441,6 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         if (media.isEmpty()) {
             return FlatFeedProjection(emptyList(), emptyList(), emptyList(), emptyMap())
         }
-
         return when (groupBy) {
             MediaGroupBy.DATE -> buildDateProjection(media, sortOrder)
             MediaGroupBy.SIZE -> buildSizeProjection(media, sortOrder)
@@ -462,7 +449,12 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun buildDateProjection(media: List<Medium>, sortOrder: SortOrder): FlatFeedProjection {
-        val ordered = if (sortOrder == SortOrder.ASCENDING) media.sortedBy { it.dateTakenMs } else media
+        val ordered = if (sortOrder == SortOrder.ASCENDING) {
+            media.sortedBy { it.dateTakenMs }
+        } else {
+            media.sortedByDescending { it.dateTakenMs }
+        }
+
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val yesterday = today.minusDays(1)
@@ -511,14 +503,14 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun buildSizeProjection(media: List<Medium>, sortOrder: SortOrder): FlatFeedProjection {
-        val sorted = if (sortOrder == SortOrder.ASCENDING) {
+        val ordered = if (sortOrder == SortOrder.ASCENDING) {
             media.sortedBy { it.sizeBytes }
         } else {
             media.sortedByDescending { it.sizeBytes }
         }
-        val buckets = LinkedHashMap<String, MutableList<Medium>>()
 
-        for (item in sorted) {
+        val buckets = LinkedHashMap<String, MutableList<Medium>>()
+        for (item in ordered) {
             val bucket = when {
                 item.sizeBytes >= 100L * 1024L * 1024L -> "Huge (> 100 MB)"
                 item.sizeBytes >= 10L * 1024L * 1024L -> "Large (10–100 MB)"
@@ -528,18 +520,22 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             buckets.getOrPut(bucket) { ArrayList() }.add(item)
         }
 
-        val flatItems = ArrayList<Medium>(sorted.size)
-        val indexToPill = ArrayList<String>(sorted.size)
-        val idToIndex = HashMap<Long, Int>(sorted.size)
+        val flatItems = ArrayList<Medium>(ordered.size)
+        val indexToPill = ArrayList<String>(ordered.size + buckets.size)
+        val idToGridIndex = HashMap<Long, Int>(ordered.size)
         val sections = ArrayList<TimelineSection>(buckets.size)
 
+        var gridIndex = 0
         for ((bucket, list) in buckets) {
             sections.add(TimelineSection(title = "$bucket · ${list.size}", pillLabel = bucket, items = list))
+            // Account for full-span section header slot in LazyVerticalGrid
+            indexToPill.add(bucket)
+            gridIndex++
             for (item in list) {
-                val flatIdx = flatItems.size
                 flatItems.add(item)
                 indexToPill.add(bucket)
-                idToIndex[item.id] = flatIdx
+                idToGridIndex[item.id] = gridIndex
+                gridIndex++
             }
         }
 
@@ -547,36 +543,43 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             items = flatItems,
             sections = sections,
             indexToPill = indexToPill,
-            idToIndex = idToIndex
+            idToIndex = idToGridIndex
         )
     }
 
     private fun buildFolderProjection(media: List<Medium>, sortOrder: SortOrder): FlatFeedProjection {
-        val orderedMedia = if (sortOrder == SortOrder.ASCENDING) media.sortedBy { it.dateTakenMs } else media
         val grouped = LinkedHashMap<String, MutableList<Medium>>()
-        for (item in orderedMedia) {
+        for (item in media) {
             val folder = item.bucketName.ifBlank { "Internal Storage" }
             grouped.getOrPut(folder) { ArrayList() }.add(item)
         }
 
-        val folderEntries = if (sortOrder == SortOrder.ASCENDING) {
+        val sortedFolders = if (sortOrder == SortOrder.ASCENDING) {
             grouped.entries.sortedBy { it.key.lowercase(Locale.ROOT) }
         } else {
-            grouped.entries.toList()
+            grouped.entries.sortedByDescending { it.key.lowercase(Locale.ROOT) }
         }
 
-        val flatItems = ArrayList<Medium>(orderedMedia.size)
-        val indexToPill = ArrayList<String>(orderedMedia.size)
-        val idToIndex = HashMap<Long, Int>(orderedMedia.size)
-        val sections = ArrayList<TimelineSection>(folderEntries.size)
+        val flatItems = ArrayList<Medium>(media.size)
+        val indexToPill = ArrayList<String>(media.size + sortedFolders.size)
+        val idToGridIndex = HashMap<Long, Int>(media.size)
+        val sections = ArrayList<TimelineSection>(sortedFolders.size)
 
-        for ((folder, list) in folderEntries) {
-            sections.add(TimelineSection(title = "$folder · ${list.size}", pillLabel = folder, items = list))
-            for (item in list) {
-                val flatIdx = flatItems.size
+        var gridIndex = 0
+        for ((folder, list) in sortedFolders) {
+            val orderedItems = if (sortOrder == SortOrder.ASCENDING) {
+                list.sortedBy { it.dateTakenMs }
+            } else {
+                list.sortedByDescending { it.dateTakenMs }
+            }
+            sections.add(TimelineSection(title = "$folder · ${orderedItems.size}", pillLabel = folder, items = orderedItems))
+            indexToPill.add(folder)
+            gridIndex++
+            for (item in orderedItems) {
                 flatItems.add(item)
                 indexToPill.add(folder)
-                idToIndex[item.id] = flatIdx
+                idToGridIndex[item.id] = gridIndex
+                gridIndex++
             }
         }
 
@@ -584,7 +587,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             items = flatItems,
             sections = sections,
             indexToPill = indexToPill,
-            idToIndex = idToIndex
+            idToIndex = idToGridIndex
         )
     }
 }

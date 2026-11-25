@@ -18,6 +18,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.security.ProviderException
 import java.security.SecureRandom
@@ -57,7 +58,9 @@ object VaultCrypto {
     const val HEADER_BYTES = 32
 
     private const val KEYSTORE_PROVIDER = "AndroidKeyStore"
-    private const val KEK_ALIAS = "lumina_vault_strongbox_kek_v1"
+    private const val LEGACY_KEK_ALIAS = "lumina_vault_strongbox_kek_v1"
+    private const val KEK_ALIAS = "lumina_vault_strongbox_kek_v2"
+    private const val AUTH_VALIDITY_SECONDS = 15
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private val KEY_MAGIC = byteArrayOf('L'.code.toByte(), 'V'.code.toByte(), 'K'.code.toByte(), '1'.code.toByte())
     private val FILE_MAGIC = byteArrayOf('L'.code.toByte(), 'V'.code.toByte(), 'F'.code.toByte(), '1'.code.toByte())
@@ -83,7 +86,7 @@ object VaultCrypto {
                 VaultAuthError.HARDWARE_UNAVAILABLE
             }
             val msg = if (err == VaultAuthError.NONE_ENROLLED) {
-                "Set a screen lock PIN or fingerprint in Android Settings to use Locked Folder."
+                "Set a screen lock PIN or fingerprint in Android Settings to hide items."
             } else {
                 "Biometric or device credential security is unavailable on this device."
             }
@@ -95,7 +98,7 @@ object VaultCrypto {
         val kek: SecretKey
         val strongBox: Boolean
         try {
-            val resolved = getOrCreateKek(context)
+            val resolved = getOrCreateKek(context, cleanLegacyIfUnused = isCreating)
             kek = resolved.first
             strongBox = resolved.second
         } catch (e: Exception) {
@@ -103,57 +106,32 @@ object VaultCrypto {
             return
         }
 
-        var existingWrapped: ByteArray? = null
-        val cipher: Cipher
-        try {
-            cipher = Cipher.getInstance(TRANSFORMATION)
-            if (isCreating) {
-                cipher.init(Cipher.ENCRYPT_MODE, kek)
-            } else {
-                val parsed = parseKeyFile(keyFile)
-                existingWrapped = parsed.second
-                cipher.init(Cipher.DECRYPT_MODE, kek, GCMParameterSpec(GCM_TAG_BITS, parsed.first))
-            }
-        } catch (_: KeyPermanentlyInvalidatedException) {
-            onResult(
-                VaultAuthResult.Failure(
-                    VaultAuthError.KEY_INVALIDATED,
-                    "Hardware vault key was invalidated by the system."
-                )
-            )
-            return
-        } catch (e: Exception) {
-            onResult(VaultAuthResult.Failure(VaultAuthError.FAILED, "Cipher init failed: ${e.message}"))
-            return
-        }
-
-        val prompt = BiometricPrompt.Builder(context)
-            .setTitle(title)
-            .setSubtitle(subtitle)
-            .setAllowedAuthenticators(authenticators)
-            .build()
-
         val callback = object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                val authedCipher = result.cryptoObject?.cipher
-                if (authedCipher == null) {
-                    onResult(VaultAuthResult.Failure(VaultAuthError.FAILED, "Hardware cipher unavailable."))
-                    return
-                }
                 try {
+                    val cipher = Cipher.getInstance(TRANSFORMATION)
                     if (isCreating) {
+                        cipher.init(Cipher.ENCRYPT_MODE, kek)
                         val newDek = ByteArray(32)
                         secureRandom.nextBytes(newDek)
-                        val wrapped = authedCipher.doFinal(newDek)
-                        val iv = authedCipher.iv
-                        writeKeyFileAtomically(keyFile, iv, wrapped, strongBox)
+                        val wrapped = cipher.doFinal(newDek)
+                        writeKeyFileAtomically(keyFile, cipher.iv, wrapped, strongBox)
                         onResult(VaultAuthResult.Success(newDek, strongBox))
                     } else {
-                        val dek = authedCipher.doFinal(existingWrapped!!)
+                        val (iv, wrapped) = parseKeyFile(keyFile)
+                        cipher.init(Cipher.DECRYPT_MODE, kek, GCMParameterSpec(GCM_TAG_BITS, iv))
+                        val dek = cipher.doFinal(wrapped)
                         onResult(VaultAuthResult.Success(dek, strongBox))
                     }
+                } catch (_: KeyPermanentlyInvalidatedException) {
+                    onResult(
+                        VaultAuthResult.Failure(
+                            VaultAuthError.KEY_INVALIDATED,
+                            "Hardware key was invalidated by the system."
+                        )
+                    )
                 } catch (e: Exception) {
-                    onResult(VaultAuthResult.Failure(VaultAuthError.FAILED, "Vault key operation failed: ${e.message}"))
+                    onResult(VaultAuthResult.Failure(VaultAuthError.FAILED, "Vault unlock failed: ${e.message}"))
                 }
             }
 
@@ -169,16 +147,28 @@ object VaultCrypto {
             }
         }
 
-        prompt.authenticate(
-            BiometricPrompt.CryptoObject(cipher),
-            CancellationSignal(),
-            context.mainExecutor,
-            callback
-        )
+        try {
+            val prompt = BiometricPrompt.Builder(context)
+                .setTitle(title)
+                .setSubtitle(subtitle)
+                .setAllowedAuthenticators(authenticators)
+                .build()
+
+            prompt.authenticate(
+                CancellationSignal(),
+                context.mainExecutor,
+                callback
+            )
+        } catch (e: Exception) {
+            onResult(VaultAuthResult.Failure(VaultAuthError.FAILED, "Biometric prompt failed: ${e.message}"))
+        }
     }
 
-    private fun getOrCreateKek(context: Context): Pair<SecretKey, Boolean> {
+    private fun getOrCreateKek(context: Context, cleanLegacyIfUnused: Boolean): Pair<SecretKey, Boolean> {
         val ks = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
+        if (cleanLegacyIfUnused && ks.containsAlias(LEGACY_KEK_ALIAS)) {
+            runCatching { ks.deleteEntry(LEGACY_KEK_ALIAS) }
+        }
         val existing = ks.getKey(KEK_ALIAS, null) as? SecretKey
         if (existing != null) {
             return existing to isKeyStrongBoxBacked(existing)
@@ -191,6 +181,7 @@ object VaultCrypto {
                 return sbKey to isKeyStrongBoxBacked(sbKey)
             } catch (_: StrongBoxUnavailableException) {
             } catch (_: ProviderException) {
+            } catch (_: GeneralSecurityException) {
             }
         }
         val teeKey = generateKek(useStrongBox = false)
@@ -199,7 +190,7 @@ object VaultCrypto {
 
     private fun generateKek(useStrongBox: Boolean): SecretKey {
         val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE_PROVIDER)
-        val builder = KeyGenParameterSpec.Builder(
+        val spec = KeyGenParameterSpec.Builder(
             KEK_ALIAS,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
         )
@@ -208,14 +199,14 @@ object VaultCrypto {
             .setKeySize(256)
             .setUserAuthenticationRequired(true)
             .setUserAuthenticationParameters(
-                0,
+                AUTH_VALIDITY_SECONDS,
                 KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL
             )
             .setInvalidatedByBiometricEnrollment(false)
-            .setUnlockedDeviceRequired(true)
             .setIsStrongBoxBacked(useStrongBox)
+            .build()
 
-        kg.init(builder.build())
+        kg.init(spec)
         return kg.generateKey()
     }
 
@@ -257,10 +248,6 @@ object VaultCrypto {
         return iv to wrapped
     }
 
-    /**
-     * Encrypts an arbitrary stream into fixed 64 KB AES-256-GCM chunks for O(1) random-access playback.
-     * Writes exact byte length into the 32-byte header on completion and fsyncs to flash.
-     */
     fun encryptStream(
         input: InputStream,
         outputFile: File,
@@ -278,7 +265,6 @@ object VaultCrypto {
         try {
             RandomAccessFile(tmp, "rw").use { raf ->
                 raf.setLength(0L)
-                // Reserve 32-byte header
                 raf.write(ByteArray(HEADER_BYTES))
 
                 while (true) {
@@ -295,7 +281,6 @@ object VaultCrypto {
                     chunkIndex++
                 }
 
-                // Patch exact header
                 raf.seek(0L)
                 raf.write(buildHeaderBytes(fileId, totalPlain, baseNonce, CHUNK_SIZE))
                 raf.fd.sync()
@@ -329,7 +314,6 @@ object VaultCrypto {
         return VaultFileHeader(fileId, plainLen, baseNonce, chunkSize)
     }
 
-    /** Decrypts a single 64 KB chunk at O(1) disk offset for instant video scrubbing. */
     fun decryptChunk(
         raf: RandomAccessFile,
         header: VaultFileHeader,
@@ -363,8 +347,7 @@ object VaultCrypto {
             val out = ByteArrayOutputStream(header.plaintextLength.toInt().coerceAtLeast(0))
             val totalChunks = ((header.plaintextLength + header.chunkSize - 1) / header.chunkSize).toInt()
             for (i in 0 until totalChunks) {
-                val chunk = decryptChunk(raf, header, i, dek)
-                out.write(chunk)
+                out.write(decryptChunk(raf, header, i, dek))
             }
             return out.toByteArray()
         }
@@ -375,8 +358,7 @@ object VaultCrypto {
             val header = readHeader(raf)
             val totalChunks = ((header.plaintextLength + header.chunkSize - 1) / header.chunkSize).toInt()
             for (i in 0 until totalChunks) {
-                val chunk = decryptChunk(raf, header, i, dek)
-                output.write(chunk)
+                output.write(decryptChunk(raf, header, i, dek))
             }
         }
     }

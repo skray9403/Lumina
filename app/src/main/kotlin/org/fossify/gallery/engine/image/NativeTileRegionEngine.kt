@@ -7,6 +7,7 @@ import android.graphics.Rect
 import android.net.Uri
 import android.util.LruCache
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -25,6 +26,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
@@ -32,20 +34,20 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
-import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.fossify.gallery.engine.vault.VaultCrypto
 import org.fossify.gallery.ui.theme.LuminaMotion
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -81,12 +83,7 @@ fun NativeTiledImageViewer(
 
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
     val scaleAnim = remember(imageUri) { Animatable(1f) }
-    val offsetXAnim = remember(imageUri) { Animatable(0f) }
-    val offsetYAnim = remember(imageUri) { Animatable(0f) }
-    var doubleTapJob by remember(imageUri) { mutableStateOf<Job?>(null) }
-
-    val scale = scaleAnim.value
-    val offset = Offset(offsetXAnim.value, offsetYAnim.value)
+    val offsetAnim = remember(imageUri) { Animatable(Offset.Zero, Offset.VectorConverter) }
 
     var regionDecoder by remember(imageUri) { mutableStateOf<BitmapRegionDecoder?>(null) }
     val tileCache = remember(imageUri) {
@@ -100,26 +97,49 @@ fun NativeTiledImageViewer(
 
     val normalizedOrientation = ((orientationDegrees % 360) + 360) % 360
 
+    fun computeFitDims(vw: Float, vh: Float): Pair<Float, Float> {
+        if (vw <= 0f || vh <= 0f || imageWidth <= 0 || imageHeight <= 0) return vw to vh
+        val baseAspect = imageWidth.toFloat() / imageHeight.toFloat()
+        val canvasAspect = vw / vh
+        return if (baseAspect > canvasAspect) {
+            vw to (vw / baseAspect)
+        } else {
+            (vh * baseAspect) to vh
+        }
+    }
+
+    fun clampToFittedImage(raw: Offset, s: Float, vw: Float, vh: Float): Offset {
+        val (fitW, fitH) = computeFitDims(vw, vh)
+        val maxX = max(0f, (fitW * s - vw) / 2f)
+        val maxY = max(0f, (fitH * s - vh) / 2f)
+        return Offset(
+            x = raw.x.coerceIn(-maxX, maxX),
+            y = raw.y.coerceIn(-maxY, maxY)
+        )
+    }
+
     DisposableEffect(imageUri) {
         onEdgeSwipeHandoff(true)
-        val openJob = scope.launch(Dispatchers.IO) {
-            try {
-                val decoder = context.contentResolver.openFileDescriptor(imageUri, "r")?.use { pfd ->
-                    BitmapRegionDecoder.newInstance(pfd.fileDescriptor, false)
-                }
-                if (isActive && decoder != null) {
-                    withContext(Dispatchers.Main) {
-                        regionDecoder = decoder
+        val openJob = if (imageUri.scheme == VaultCrypto.VAULT_SCHEME) {
+            null
+        } else {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val decoder = context.contentResolver.openFileDescriptor(imageUri, "r")?.use { pfd ->
+                        BitmapRegionDecoder.newInstance(pfd.fileDescriptor, false)
                     }
-                } else {
-                    decoder?.recycle()
+                    if (isActive && decoder != null) {
+                        withContext(Dispatchers.Main) { regionDecoder = decoder }
+                    } else {
+                        decoder?.recycle()
+                    }
+                } catch (_: Exception) {
                 }
-            } catch (_: Exception) {
             }
         }
 
         onDispose {
-            openJob.cancel()
+            openJob?.cancel()
             tileJob?.cancel()
             val d = regionDecoder
             regionDecoder = null
@@ -129,102 +149,129 @@ fun NativeTiledImageViewer(
         }
     }
 
-    LaunchedEffect(scale, offset, regionDecoder, viewportSize) {
+    LaunchedEffect(regionDecoder, viewportSize) {
         val decoder = regionDecoder ?: return@LaunchedEffect
-        if (scale <= 1.5f || viewportSize.width <= 0 || viewportSize.height <= 0) {
-            tileJob?.cancel()
-            visibleTiles.clear()
-            return@LaunchedEffect
-        }
+        snapshotFlow { scaleAnim.value to offsetAnim.value }
+            .collectLatest { (currentScale, currentOffset) ->
+                if (currentScale <= 1.5f || viewportSize.width <= 0 || viewportSize.height <= 0) {
+                    tileJob?.cancel()
+                    visibleTiles.clear()
+                    return@collectLatest
+                }
 
-        tileJob?.cancel()
-        tileJob = scope.launch(Dispatchers.IO) {
-            delay(32)
-            if (!isActive) return@launch
+                delay(32)
+                if (!isActive) return@collectLatest
 
-            val rawW = decoder.width
-            val rawH = decoder.height
-            if (rawW <= 0 || rawH <= 0) return@launch
+                tileJob?.cancel()
+                tileJob = scope.launch(Dispatchers.IO) {
+                    val rawW = decoder.width
+                    val rawH = decoder.height
+                    if (rawW <= 0 || rawH <= 0) return@launch
 
-            val rawVisible = computeVisibleRawRect(
-                viewportWidth = viewportSize.width.toFloat(),
-                viewportHeight = viewportSize.height.toFloat(),
-                displayWidth = imageWidth.toFloat(),
-                displayHeight = imageHeight.toFloat(),
-                rawWidth = rawW,
-                rawHeight = rawH,
-                orientation = normalizedOrientation,
-                scale = scale,
-                offset = offset
-            )
+                    val rawVisible = computeVisibleRawRect(
+                        viewportWidth = viewportSize.width.toFloat(),
+                        viewportHeight = viewportSize.height.toFloat(),
+                        displayWidth = imageWidth.toFloat(),
+                        displayHeight = imageHeight.toFloat(),
+                        rawWidth = rawW,
+                        rawHeight = rawH,
+                        orientation = normalizedOrientation,
+                        scale = currentScale,
+                        offset = currentOffset
+                    )
 
-            val sampleSize = when {
-                scale > 4f -> 1
-                scale > 2.2f -> 2
-                else -> 4
-            }
-            val opts = BitmapFactory.Options().apply {
-                inSampleSize = sampleSize
-                inPreferredConfig = Bitmap.Config.RGB_565
-            }
+                    val sampleSize = when {
+                        currentScale > 4f -> 1
+                        currentScale > 2.2f -> 2
+                        else -> 4
+                    }
+                    val opts = BitmapFactory.Options().apply {
+                        inSampleSize = sampleSize
+                        inPreferredConfig = Bitmap.Config.RGB_565
+                    }
 
-            val startCol = floor(rawVisible.left.toFloat() / TILE_SIZE).toInt().coerceAtLeast(0)
-            val endCol = ceil(rawVisible.right.toFloat() / TILE_SIZE).toInt()
-                .coerceAtMost((rawW + TILE_SIZE - 1) / TILE_SIZE)
-            val startRow = floor(rawVisible.top.toFloat() / TILE_SIZE).toInt().coerceAtLeast(0)
-            val endRow = ceil(rawVisible.bottom.toFloat() / TILE_SIZE).toInt()
-                .coerceAtMost((rawH + TILE_SIZE - 1) / TILE_SIZE)
+                    val startCol = floor(rawVisible.left.toFloat() / TILE_SIZE).toInt().coerceAtLeast(0)
+                    val endCol = ceil(rawVisible.right.toFloat() / TILE_SIZE).toInt()
+                        .coerceAtMost((rawW + TILE_SIZE - 1) / TILE_SIZE)
+                    val startRow = floor(rawVisible.top.toFloat() / TILE_SIZE).toInt().coerceAtLeast(0)
+                    val endRow = ceil(rawVisible.bottom.toFloat() / TILE_SIZE).toInt()
+                        .coerceAtMost((rawH + TILE_SIZE - 1) / TILE_SIZE)
 
-            val neededKeys = HashSet<String>()
-            val decodedBatch = LinkedHashMap<String, DecodedTile>()
+                    val neededKeys = HashSet<String>()
+                    val decodedBatch = LinkedHashMap<String, DecodedTile>()
 
-            for (row in startRow until endRow) {
-                for (col in startCol until endCol) {
-                    if (!isActive) return@launch
-                    val key = "${col}_${row}_$sampleSize"
-                    neededKeys.add(key)
+                    for (row in startRow until endRow) {
+                        for (col in startCol until endCol) {
+                            if (!isActive) return@launch
+                            val key = "${col}_${row}_$sampleSize"
+                            neededKeys.add(key)
 
-                    var tile = tileCache.get(key)
-                    if (tile == null) {
-                        val rect = Rect(
-                            col * TILE_SIZE,
-                            row * TILE_SIZE,
-                            min((col + 1) * TILE_SIZE, rawW),
-                            min((row + 1) * TILE_SIZE, rawH)
-                        )
-                        val bmp = try {
-                            synchronized(decoder) {
-                                if (!decoder.isRecycled) decoder.decodeRegion(rect, opts) else null
+                            var tile = tileCache.get(key)
+                            if (tile == null) {
+                                val rect = Rect(
+                                    col * TILE_SIZE,
+                                    row * TILE_SIZE,
+                                    min((col + 1) * TILE_SIZE, rawW),
+                                    min((row + 1) * TILE_SIZE, rawH)
+                                )
+                                val bmp = try {
+                                    synchronized(decoder) {
+                                        if (!decoder.isRecycled) decoder.decodeRegion(rect, opts) else null
+                                    }
+                                } catch (_: Exception) {
+                                    null
+                                }
+                                if (bmp != null) {
+                                    tile = DecodedTile(bmp.asImageBitmap(), rect, bmp.allocationByteCount)
+                                    tileCache.put(key, tile)
+                                }
                             }
-                        } catch (_: Exception) {
-                            null
-                        }
-                        if (bmp != null) {
-                            tile = DecodedTile(bmp.asImageBitmap(), rect, bmp.allocationByteCount)
-                            tileCache.put(key, tile)
+                            if (tile != null) decodedBatch[key] = tile
                         }
                     }
-                    if (tile != null) {
-                        decodedBatch[key] = tile
-                    }
-                }
-            }
 
-            if (isActive) {
-                withContext(Dispatchers.Main) {
-                    val stale = visibleTiles.keys.filter { it !in neededKeys }
-                    stale.forEach { visibleTiles.remove(it) }
-                    visibleTiles.putAll(decodedBatch)
+                    if (isActive) {
+                        withContext(Dispatchers.Main) {
+                            val stale = visibleTiles.keys.filter { it !in neededKeys }
+                            stale.forEach { visibleTiles.remove(it) }
+                            visibleTiles.putAll(decodedBatch)
+                        }
+                    }
                 }
             }
-        }
     }
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .onSizeChanged { viewportSize = it }
-            .pointerInput(imageUri, imageWidth, imageHeight) {
+            .pointerInput(imageUri) {
+                detectTapGestures(
+                    onTap = { onSingleTap() },
+                    onDoubleTap = { tapOffset ->
+                        val vw = size.width.toFloat()
+                        val vh = size.height.toFloat()
+                        if (scaleAnim.value > 1.2f) {
+                            onEdgeSwipeHandoff(true)
+                            scope.launch {
+                                launch { scaleAnim.animateTo(1f, LuminaMotion.expressiveSpatial()) }
+                                launch { offsetAnim.animateTo(Offset.Zero, LuminaMotion.expressiveSpatial()) }
+                            }
+                        } else {
+                            val targetScale = 2.5f
+                            val center = Offset(vw / 2f, vh / 2f)
+                            val rawOffset = -(tapOffset - center) * (targetScale - 1f)
+                            val clamped = clampToFittedImage(rawOffset, targetScale, vw, vh)
+                            onEdgeSwipeHandoff(false)
+                            scope.launch {
+                                launch { scaleAnim.animateTo(targetScale, LuminaMotion.expressiveSpatial()) }
+                                launch { offsetAnim.animateTo(clamped, LuminaMotion.expressiveSpatial()) }
+                            }
+                        }
+                    }
+                )
+            }
+            .pointerInput(imageUri) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
                     var verticalDismissActive = false
@@ -233,187 +280,86 @@ fun NativeTiledImageViewer(
                     var totalDragX = 0f
                     var totalDragY = 0f
                     var lockedHorizontalForPager = false
-                    var hadMultiTouch = false
+
+                    val vw = size.width.toFloat()
+                    val vh = size.height.toFloat()
 
                     do {
                         val event = awaitPointerEvent()
                         val activePointers = event.changes.count { it.pressed }
-                        val pointerCountChanged = event.changes.any { it.pressed != it.previousPressed }
 
                         if (activePointers >= 2) {
-                            hadMultiTouch = true
                             verticalDismissActive = false
-                            doubleTapJob?.cancel()
-                            doubleTapJob = null
-                            if (!pointerCountChanged) {
-                                val zoomChange = event.calculateZoom()
-                                val panChange = event.calculatePan()
-                                val centroid = event.calculateCentroid(useCurrent = true)
-                                if (zoomChange != 1f || panChange != Offset.Zero) {
-                                    val oldScale = scaleAnim.value
-                                    val newScale = (oldScale * zoomChange).coerceIn(1f, 8f)
-                                    val center = Offset(size.width / 2f, size.height / 2f)
-                                    val focal = centroid - center
-                                    val curOffset = Offset(offsetXAnim.value, offsetYAnim.value)
-                                    val rawOffset = (curOffset - focal) * (newScale / oldScale) + focal + panChange
-                                    val clamped = clampOffset(
-                                        raw = rawOffset,
-                                        scale = newScale,
-                                        viewportWidth = size.width.toFloat(),
-                                        viewportHeight = size.height.toFloat(),
-                                        imageWidth = imageWidth.toFloat(),
-                                        imageHeight = imageHeight.toFloat()
-                                    )
-                                    scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                                        scaleAnim.snapTo(newScale)
-                                        offsetXAnim.snapTo(clamped.x)
-                                        offsetYAnim.snapTo(clamped.y)
-                                    }
-                                    onEdgeSwipeHandoff(newScale <= 1.02f)
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            val centroid = event.calculateCentroid(useCurrent = true)
+                            if (zoomChange != 1f || panChange != Offset.Zero) {
+                                val oldScale = scaleAnim.value
+                                val newScale = (oldScale * zoomChange).coerceIn(1f, 8f)
+                                val center = Offset(vw / 2f, vh / 2f)
+                                val focal = centroid - center
+                                val rawNewOffset = (offsetAnim.value - focal) * (newScale / oldScale) + focal + panChange
+                                val clamped = clampToFittedImage(rawNewOffset, newScale, vw, vh)
+                                scope.launch {
+                                    scaleAnim.snapTo(newScale)
+                                    offsetAnim.snapTo(clamped)
                                 }
-                            }
-                            event.changes.forEach {
-                                if (it.positionChanged() || it.changedToUp()) it.consume()
+                                onEdgeSwipeHandoff(newScale <= 1.02f)
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
                             }
                         } else if (activePointers == 1) {
-                            if (hadMultiTouch) {
-                                if (!pointerCountChanged) {
-                                    val pan = event.calculatePan()
-                                    val curScale = scaleAnim.value
-                                    if (curScale > 1.02f && pan != Offset.Zero) {
-                                        val clamped = clampOffset(
-                                            raw = Offset(offsetXAnim.value, offsetYAnim.value) + pan,
-                                            scale = curScale,
-                                            viewportWidth = size.width.toFloat(),
-                                            viewportHeight = size.height.toFloat(),
-                                            imageWidth = imageWidth.toFloat(),
-                                            imageHeight = imageHeight.toFloat()
-                                        )
-                                        scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                                            offsetXAnim.snapTo(clamped.x)
-                                            offsetYAnim.snapTo(clamped.y)
-                                        }
-                                    }
-                                    onEdgeSwipeHandoff(curScale <= 1.02f)
-                                }
-                                event.changes.forEach {
-                                    if (it.positionChanged() || it.changedToUp()) it.consume()
+                            val pan = event.calculatePan()
+                            val curScale = scaleAnim.value
+                            if (curScale > 1.02f) {
+                                val (fitW, _) = computeFitDims(vw, vh)
+                                val maxPanX = max(0f, (fitW * curScale - vw) / 2f)
+                                val curOff = offsetAnim.value
+                                val atLeftEdge = curOff.x >= maxPanX - 1f && pan.x > 0f
+                                val atRightEdge = curOff.x <= -maxPanX + 1f && pan.x < 0f
+                                if ((atLeftEdge || atRightEdge) && abs(pan.x) > abs(pan.y)) {
+                                    onEdgeSwipeHandoff(true)
+                                } else {
+                                    onEdgeSwipeHandoff(false)
+                                    val clamped = clampToFittedImage(curOff + pan, curScale, vw, vh)
+                                    scope.launch { offsetAnim.snapTo(clamped) }
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
                                 }
                             } else {
-                                val pan = event.calculatePan()
-                                val curScale = scaleAnim.value
-                                if (curScale > 1.02f) {
-                                    val (fitW, _) = computeFitDimensions(
-                                        size.width.toFloat(),
-                                        size.height.toFloat(),
-                                        imageWidth.toFloat(),
-                                        imageHeight.toFloat()
-                                    )
-                                    val maxPanX = max(0f, (fitW * curScale - size.width) / 2f)
-                                    val curOffset = Offset(offsetXAnim.value, offsetYAnim.value)
-                                    val atLeftEdge = curOffset.x >= maxPanX - 1f && pan.x > 0f
-                                    val atRightEdge = curOffset.x <= -maxPanX + 1f && pan.x < 0f
-                                    if ((atLeftEdge || atRightEdge) && abs(pan.x) > abs(pan.y)) {
-                                        onEdgeSwipeHandoff(true)
-                                    } else {
-                                        onEdgeSwipeHandoff(false)
-                                        if (pan != Offset.Zero) {
-                                            doubleTapJob?.cancel()
-                                            doubleTapJob = null
-                                            val clamped = clampOffset(
-                                                raw = curOffset + pan,
-                                                scale = curScale,
-                                                viewportWidth = size.width.toFloat(),
-                                                viewportHeight = size.height.toFloat(),
-                                                imageWidth = imageWidth.toFloat(),
-                                                imageHeight = imageHeight.toFloat()
-                                            )
-                                            scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                                                offsetXAnim.snapTo(clamped.x)
-                                                offsetYAnim.snapTo(clamped.y)
-                                            }
-                                        }
-                                        event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                    }
-                                } else {
-                                    totalDragX += pan.x
-                                    totalDragY += pan.y
+                                totalDragX += pan.x
+                                totalDragY += pan.y
 
-                                    if (!verticalDismissActive && !lockedHorizontalForPager && !swipeUpTriggered) {
-                                        val slop = viewConfiguration.touchSlop
-                                        if (abs(totalDragX) > slop && abs(totalDragX) > abs(totalDragY)) {
-                                            lockedHorizontalForPager = true
-                                        } else if (totalDragY > slop && abs(totalDragY) > abs(totalDragX) * 1.15f) {
-                                            verticalDismissActive = true
-                                        } else if (totalDragY < -slop * 3f && abs(totalDragY) > abs(totalDragX) * 1.25f) {
-                                            swipeUpTriggered = true
-                                            onSwipeUpDetails()
-                                            event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                        }
-                                    }
-
-                                    if (verticalDismissActive) {
-                                        totalVerticalDrag += pan.y
-                                        onVerticalDismissDrag(totalVerticalDrag)
+                                if (!verticalDismissActive && !lockedHorizontalForPager && !swipeUpTriggered) {
+                                    val slop = viewConfiguration.touchSlop
+                                    if (abs(totalDragX) > slop && abs(totalDragX) > abs(totalDragY)) {
+                                        lockedHorizontalForPager = true
+                                    } else if (totalDragY > slop && abs(totalDragY) > abs(totalDragX) * 1.15f) {
+                                        verticalDismissActive = true
+                                    } else if (totalDragY < -slop * 3f && abs(totalDragY) > abs(totalDragX) * 1.25f) {
+                                        swipeUpTriggered = true
+                                        onSwipeUpDetails()
                                         event.changes.forEach { if (it.positionChanged()) it.consume() }
                                     }
                                 }
+
+                                if (verticalDismissActive) {
+                                    totalVerticalDrag += pan.y
+                                    onVerticalDismissDrag(totalVerticalDrag)
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                }
                             }
-                        } else if (hadMultiTouch) {
-                            event.changes.forEach { if (it.changedToUp()) it.consume() }
                         }
                     } while (event.changes.any { it.pressed })
 
                     if (verticalDismissActive) {
                         onVerticalDismissEnd(totalVerticalDrag)
-                    }
-                    if (hadMultiTouch && scaleAnim.value <= 1.02f) {
-                        onEdgeSwipeHandoff(true)
-                        doubleTapJob?.cancel()
-                        doubleTapJob = scope.launch {
-                            val zoomSpring = LuminaMotion.expressiveSpatial<Float>()
-                            launch { scaleAnim.animateTo(1f, zoomSpring) }
-                            launch { offsetXAnim.animateTo(0f, zoomSpring) }
-                            launch { offsetYAnim.animateTo(0f, zoomSpring) }
+                    } else if (scaleAnim.value <= 1.02f && offsetAnim.value != Offset.Zero) {
+                        scope.launch {
+                            launch { scaleAnim.animateTo(1f, LuminaMotion.responsiveSpring()) }
+                            launch { offsetAnim.animateTo(Offset.Zero, LuminaMotion.responsiveSpring()) }
                         }
+                        onEdgeSwipeHandoff(true)
                     }
                 }
-            }
-            .pointerInput(imageUri, imageWidth, imageHeight) {
-                detectTapGestures(
-                    onTap = { onSingleTap() },
-                    onDoubleTap = { tapOffset ->
-                        doubleTapJob?.cancel()
-                        val zoomSpring = LuminaMotion.expressiveSpatial<Float>()
-                        if (scaleAnim.value > 1.2f) {
-                            onEdgeSwipeHandoff(true)
-                            doubleTapJob = scope.launch {
-                                launch { scaleAnim.animateTo(1f, zoomSpring) }
-                                launch { offsetXAnim.animateTo(0f, zoomSpring) }
-                                launch { offsetYAnim.animateTo(0f, zoomSpring) }
-                            }
-                        } else {
-                            val newScale = 2.5f
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            val diff = tapOffset - center
-                            val rawOffset = -diff * (newScale - 1f)
-                            val target = clampOffset(
-                                raw = rawOffset,
-                                scale = newScale,
-                                viewportWidth = size.width.toFloat(),
-                                viewportHeight = size.height.toFloat(),
-                                imageWidth = imageWidth.toFloat(),
-                                imageHeight = imageHeight.toFloat()
-                            )
-                            onEdgeSwipeHandoff(false)
-                            doubleTapJob = scope.launch {
-                                launch { scaleAnim.animateTo(newScale, zoomSpring) }
-                                launch { offsetXAnim.animateTo(target.x, zoomSpring) }
-                                launch { offsetYAnim.animateTo(target.y, zoomSpring) }
-                            }
-                        }
-                    }
-                )
             }
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -421,22 +367,15 @@ fun NativeTiledImageViewer(
             val canvasH = size.height
             if (canvasW <= 0f || canvasH <= 0f || imageWidth <= 0 || imageHeight <= 0) return@Canvas
 
-            val baseAspect = imageWidth.toFloat() / imageHeight.toFloat()
-            val canvasAspect = canvasW / canvasH
-            val fitW: Float
-            val fitH: Float
-            if (baseAspect > canvasAspect) {
-                fitW = canvasW
-                fitH = canvasW / baseAspect
-            } else {
-                fitH = canvasH
-                fitW = canvasH * baseAspect
-            }
+            val (fitW, fitH) = computeFitDims(canvasW, canvasH)
             val fitLeft = (canvasW - fitW) / 2f
             val fitTop = (canvasH - fitH) / 2f
 
-            translate(left = offset.x, top = offset.y) {
-                scale(scale = scale, pivot = center) {
+            val curScale = scaleAnim.value
+            val curOffset = offsetAnim.value
+
+            translate(left = curOffset.x, top = curOffset.y) {
+                scale(scale = curScale, pivot = center) {
                     drawImage(
                         image = baseBitmap,
                         dstOffset = IntOffset(fitLeft.roundToInt(), fitTop.roundToInt()),
@@ -444,7 +383,7 @@ fun NativeTiledImageViewer(
                     )
 
                     val decoder = regionDecoder
-                    if (scale > 1.5f && decoder != null && visibleTiles.isNotEmpty()) {
+                    if (curScale > 1.5f && decoder != null && visibleTiles.isNotEmpty()) {
                         val rawW = decoder.width.toFloat()
                         val rawH = decoder.height.toFloat()
                         if (rawW > 0f && rawH > 0f) {
@@ -486,41 +425,6 @@ fun NativeTiledImageViewer(
             }
         }
     }
-}
-
-private fun computeFitDimensions(
-    viewportWidth: Float,
-    viewportHeight: Float,
-    imageWidth: Float,
-    imageHeight: Float
-): Pair<Float, Float> {
-    if (viewportWidth <= 0f || viewportHeight <= 0f || imageWidth <= 0f || imageHeight <= 0f) {
-        return viewportWidth to viewportHeight
-    }
-    val baseAspect = imageWidth / imageHeight
-    val canvasAspect = viewportWidth / viewportHeight
-    return if (baseAspect > canvasAspect) {
-        viewportWidth to (viewportWidth / baseAspect)
-    } else {
-        (viewportHeight * baseAspect) to viewportHeight
-    }
-}
-
-private fun clampOffset(
-    raw: Offset,
-    scale: Float,
-    viewportWidth: Float,
-    viewportHeight: Float,
-    imageWidth: Float,
-    imageHeight: Float
-): Offset {
-    val (fitW, fitH) = computeFitDimensions(viewportWidth, viewportHeight, imageWidth, imageHeight)
-    val maxX = max(0f, (fitW * scale - viewportWidth) / 2f)
-    val maxY = max(0f, (fitH * scale - viewportHeight) / 2f)
-    return Offset(
-        x = raw.x.coerceIn(-maxX, maxX),
-        y = raw.y.coerceIn(-maxY, maxY)
-    )
 }
 
 private fun computeVisibleRawRect(

@@ -1,15 +1,14 @@
 package org.fossify.gallery.ui
 
-import android.app.Activity
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
-import android.view.WindowManager
 import android.widget.Toast
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -28,8 +27,11 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import org.fossify.gallery.engine.image.ImageLuminance
+import org.fossify.gallery.engine.image.rememberThumbnail
 import org.fossify.gallery.engine.vault.VaultManager
 import org.fossify.gallery.models.Medium
+import org.fossify.gallery.ui.editor.LuminaPhotoEditor
 import org.fossify.gallery.ui.home.GalleryTab
 import org.fossify.gallery.ui.home.GalleryViewModel
 import org.fossify.gallery.ui.home.LuminaHomeScreen
@@ -59,7 +61,6 @@ fun LuminaApp(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val activity = context as? Activity
     val scope = rememberCoroutineScope()
     val application = context.applicationContext as Application
 
@@ -87,7 +88,6 @@ fun LuminaApp(
     var isShareMenuOpen by remember { mutableStateOf(false) }
     var viewerOpenedFromAlbum by remember { mutableStateOf(false) }
     var viewerOpenedFromTrash by remember { mutableStateOf(false) }
-    var viewerOpenedFromVault by remember { mutableStateOf(false) }
     var viewerInitialIndex by remember { mutableIntStateOf(0) }
     var currentViewerPage by remember { mutableIntStateOf(0) }
     var viewerSourceRect by remember { mutableStateOf<Rect?>(null) }
@@ -96,32 +96,7 @@ fun LuminaApp(
 
     var pendingAddToAlbumItems by remember { mutableStateOf<List<Medium>?>(null) }
     var upnpCastTarget by remember { mutableStateOf<Medium?>(null) }
-
-    // Auto-close Locked Folder / Vault Viewer whenever VaultManager locks on backgrounding
-    LaunchedEffect(isVaultUnlocked, galleryState.isVaultOverlay, viewerOpenedFromVault) {
-        if (!isVaultUnlocked) {
-            if (viewerOpenedFromVault) {
-                isViewerOpen = false
-                isViewerClosing = false
-                viewerOpenedFromVault = false
-            }
-            if (galleryState.isVaultOverlay) {
-                galleryViewModel.closeAlbum()
-            }
-        }
-    }
-
-    // Enforce FLAG_SECURE while viewing Locked Folder media fullscreen
-    DisposableEffect(isViewerOpen, viewerOpenedFromVault, activity) {
-        if (isViewerOpen && viewerOpenedFromVault) {
-            activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        }
-        onDispose {
-            if (viewerOpenedFromVault) {
-                activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-            }
-        }
-    }
+    var editingMedium by remember { mutableStateOf<Medium?>(null) }
 
     LaunchedEffect(pickerMimeType) { galleryViewModel.setPickerMimeType(pickerMimeType) }
 
@@ -129,11 +104,10 @@ fun LuminaApp(
         if (initialTab == LuminaTab.ALBUMS.name) galleryViewModel.setTab(GalleryTab.ALBUMS)
     }
 
-    // Handle native Android Sharesheet -> "UPnP Cast" action callback
     LaunchedEffect(upnpCastMediaId, upnpCastRevision) {
         if (upnpCastMediaId != null && upnpCastRevision > 0) {
             val matched = galleryState.allMedia.firstOrNull { it.id == upnpCastMediaId }
-            if (matched != null) {
+            if (matched != null && !VaultManager.isVaultMedium(matched)) {
                 upnpCastTarget = matched
             }
         }
@@ -146,6 +120,16 @@ fun LuminaApp(
         else -> galleryState.allMedia
     }
 
+    val safeViewerMedium = viewerMedia.getOrNull(currentViewerPage) ?: viewerMedia.firstOrNull()
+
+    // Close viewer automatically if an encrypted hidden photo was open when VaultManager re-locked on background
+    LaunchedEffect(isVaultUnlocked, isViewerOpen, safeViewerMedium?.uri) {
+        if (!isVaultUnlocked && isViewerOpen && safeViewerMedium != null && VaultManager.isVaultMedium(safeViewerMedium)) {
+            isViewerOpen = false
+            isViewerClosing = false
+        }
+    }
+
     LaunchedEffect(initialUri, galleryState.allMedia, launchRevision) {
         if (initialUri != null && galleryState.allMedia.isNotEmpty()) {
             val foundIdx = galleryState.allMedia.indexOfFirst { it.uri == initialUri }
@@ -153,7 +137,6 @@ fun LuminaApp(
             useUnfilteredViewerMedia = true
             viewerOpenedFromAlbum = false
             viewerOpenedFromTrash = false
-            viewerOpenedFromVault = false
             viewerSourceRect = null
             viewerInitialIndex = resolved
             currentViewerPage = resolved
@@ -175,20 +158,23 @@ fun LuminaApp(
         if (!isViewerOpen) dockScrollState.expand()
     }
 
-    fun moveItemsToLockedFolder(items: List<Medium>) {
-        if (items.isEmpty()) return
+    fun hideAndEncryptItems(items: List<Medium>) {
+        val publicItems = items.filterNot { VaultManager.isVaultMedium(it) }
+        if (publicItems.isEmpty()) return
         VaultManager.unlock(
             context = context,
-            title = "Move to Locked Folder",
-            subtitle = "Verify identity to encrypt ${if (items.size == 1) "item" else "${items.size} items"}"
+            title = "Hide & Encrypt",
+            subtitle = "Verify identity to hide ${if (publicItems.size == 1) "item" else "${publicItems.size} items"} from gallery & other apps"
         ) { ok, err ->
             if (!ok) {
                 if (!err.isNullOrBlank()) Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
                 return@unlock
             }
             scope.launch {
-                val encryptedOriginals = VaultManager.importFromMediaStore(context, items)
+                val encryptedOriginals = VaultManager.importFromMediaStore(context, publicItems)
                 if (encryptedOriginals.isNotEmpty()) {
+                    // Re-lock immediately so newly hidden items disappear right away from the feed
+                    VaultManager.lock()
                     Toast.makeText(
                         context,
                         "Encrypted ${encryptedOriginals.size} item(s). Confirm to remove original.",
@@ -215,7 +201,18 @@ fun LuminaApp(
         }
     }
 
-    val safeViewerMedium = viewerMedia.getOrNull(currentViewerPage) ?: viewerMedia.firstOrNull()
+    val isSystemDark = isSystemInDarkTheme()
+    val viewerThumb = if (isViewerOpen && safeViewerMedium != null && !safeViewerMedium.isVideo) {
+        rememberThumbnail(safeViewerMedium)
+    } else {
+        null
+    }
+    val useLightViewerChrome = remember(isSystemDark, safeViewerMedium?.id, safeViewerMedium?.isVideo, viewerThumb) {
+        !isSystemDark &&
+            safeViewerMedium != null &&
+            !safeViewerMedium.isVideo &&
+            ImageLuminance.isBrightThumbnail(viewerThumb)
+    }
 
     LuminaTheme {
         Box(modifier = modifier.fillMaxSize()) {
@@ -228,8 +225,8 @@ fun LuminaApp(
                 onPhotosGridRootOffsetChange = { photosGridRootOffset = it },
                 onAlbumGridRootOffsetChange = { albumGridRootOffset = it },
                 hiddenMediaId = hiddenGridMediaId,
-                isViewerOpen = isViewerOpen,
-                onMediaClick = { medium, fromAlbum, fromTrash, fromVault ->
+                isViewerOpen = isViewerOpen || editingMedium != null,
+                onMediaClick = { medium, fromAlbum, fromTrash ->
                     if (pickerMode) {
                         if (allowMultiple) galleryViewModel.toggleSelection(medium.id)
                         else onMediaPicked(listOf(medium.uri))
@@ -244,13 +241,11 @@ fun LuminaApp(
                             useUnfilteredViewerMedia = false
                             viewerOpenedFromAlbum = fromAlbum
                             viewerOpenedFromTrash = fromTrash
-                            viewerOpenedFromVault = fromVault
                             idx
                         } else {
                             useUnfilteredViewerMedia = true
                             viewerOpenedFromAlbum = false
                             viewerOpenedFromTrash = false
-                            viewerOpenedFromVault = false
                             galleryState.allMedia.indexOfFirst { it.id == medium.id }.coerceAtLeast(0)
                         }
                         viewerSourceRect = sourceRect
@@ -273,13 +268,10 @@ fun LuminaApp(
                     initialSourceRect = viewerSourceRect,
                     viewModel = viewerViewModel,
                     repository = repository,
+                    useLightChrome = useLightViewerChrome,
                     isShareMenuOpen = isShareMenuOpen,
-                    isVaultMode = viewerOpenedFromVault,
-                    onMoveToVault = if (!viewerOpenedFromVault && !viewerOpenedFromTrash) {
-                        { medium -> moveItemsToLockedFolder(listOf(medium)) }
-                    } else {
-                        null
-                    },
+                    isTrashMode = viewerOpenedFromTrash,
+                    onHideItem = { medium -> hideAndEncryptItems(listOf(medium)) },
                     onPageChanged = { currentViewerPage = it },
                     onPrepareReturnRect = { targetMediaId ->
                         val targetGrid = if (viewerOpenedFromAlbum) albumGridState else photosGridState
@@ -316,7 +308,6 @@ fun LuminaApp(
                         isVideoActionDockVisible = true
                         isShareMenuOpen = false
                         viewerOpenedFromTrash = false
-                        viewerOpenedFromVault = false
                         viewerSourceRect = null
                         hiddenGridMediaId = null
                     },
@@ -324,151 +315,184 @@ fun LuminaApp(
                 )
             }
 
-            val selectedMedia = remember(
-                galleryState.selectedIds,
-                galleryState.isVaultOverlay,
-                galleryState.isTrashOverlay,
-                galleryState.vaultMedia,
-                galleryState.trashedMedia,
-                galleryState.allMedia
-            ) {
-                val source = when {
-                    galleryState.isVaultOverlay -> galleryState.vaultMedia
-                    galleryState.isTrashOverlay -> galleryState.trashedMedia
-                    else -> galleryState.allMedia
+            // Single persistent morphing bottom dock (hidden while Photo Editor is open)
+            if (editingMedium == null) {
+                val dockInViewerMode = isViewerOpen && !isViewerClosing && safeViewerMedium != null
+                val activeSelectedItems = remember(galleryState.selectedIds, galleryState.allMedia, galleryState.trashedMedia, galleryState.isTrashOverlay) {
+                    val src = if (galleryState.isTrashOverlay) galleryState.trashedMedia else galleryState.allMedia
+                    src.filter { it.id in galleryState.selectedIds }
                 }
-                source.filter { it.id in galleryState.selectedIds }
-            }
+                val isSelectionAllVault = activeSelectedItems.isNotEmpty() &&
+                    activeSelectedItems.all { VaultManager.isVaultMedium(it) }
+                val isViewerItemVault = safeViewerMedium != null && VaultManager.isVaultMedium(safeViewerMedium)
 
-            val dockInViewerMode = isViewerOpen && !isViewerClosing && safeViewerMedium != null
-            val dockMode: DockMode? = when {
-                dockInViewerMode && safeViewerMedium != null -> DockMode.Viewer(
-                    medium = safeViewerMedium,
-                    isTrashMode = viewerOpenedFromTrash,
-                    isVaultMode = viewerOpenedFromVault,
-                    onAddToAlbumClick = { pendingAddToAlbumItems = listOf(safeViewerMedium) },
-                    onRestoreClick = {
-                        if (viewerOpenedFromVault) {
-                            scope.launch {
-                                val count = VaultManager.unlockItemsToGallery(context, listOf(safeViewerMedium))
-                                if (count > 0) {
-                                    galleryViewModel.refresh()
-                                    Toast.makeText(context, "Moved out of Locked Folder", Toast.LENGTH_SHORT).show()
+                val dockMode: DockMode? = when {
+                    dockInViewerMode && safeViewerMedium != null -> DockMode.Viewer(
+                        medium = safeViewerMedium,
+                        isTrashMode = viewerOpenedFromTrash,
+                        isVaultMode = isViewerItemVault,
+                        useLightChrome = useLightViewerChrome,
+                        onEditClick = {
+                            if (!safeViewerMedium.isVideo) {
+                                editingMedium = safeViewerMedium
+                            } else {
+                                try {
+                                    val editIntent = Intent(Intent.ACTION_EDIT).apply {
+                                        setDataAndType(safeViewerMedium.uri, safeViewerMedium.mimeType)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(Intent.createChooser(editIntent, "Edit video with"))
+                                } catch (_: Exception) {
+                                    Toast.makeText(context, "No video editor installed", Toast.LENGTH_SHORT).show()
                                 }
                             }
-                        } else {
-                            viewerViewModel.restoreCurrent(repository, safeViewerMedium)
-                        }
-                    },
-                    onUpnpCastClick = { upnpCastTarget = safeViewerMedium },
-                    onDeleteClick = {
-                        when {
-                            viewerOpenedFromVault -> {
+                        },
+                        onAddToAlbumClick = { pendingAddToAlbumItems = listOf(safeViewerMedium) },
+                        onRestoreClick = {
+                            if (isViewerItemVault) {
                                 scope.launch {
-                                    VaultManager.deletePermanently(context, listOf(safeViewerMedium))
-                                    Toast.makeText(context, "Deleted permanently", Toast.LENGTH_SHORT).show()
+                                    val count = VaultManager.unlockItemsToGallery(context, listOf(safeViewerMedium))
+                                    if (count > 0) {
+                                        galleryViewModel.refresh()
+                                        Toast.makeText(context, "Unlocked item for all apps", Toast.LENGTH_SHORT).show()
+                                    }
                                 }
+                            } else {
+                                viewerViewModel.restoreCurrent(repository, safeViewerMedium)
                             }
-                            viewerOpenedFromTrash -> viewerViewModel.deletePermanently(repository, safeViewerMedium)
-                            else -> viewerViewModel.deleteCurrent(repository, safeViewerMedium)
+                        },
+                        onUpnpCastClick = { upnpCastTarget = safeViewerMedium },
+                        onDeleteClick = {
+                            when {
+                                isViewerItemVault -> {
+                                    scope.launch {
+                                        VaultManager.deletePermanently(context, listOf(safeViewerMedium))
+                                        Toast.makeText(context, "Deleted permanently", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                viewerOpenedFromTrash -> viewerViewModel.deletePermanently(repository, safeViewerMedium)
+                                else -> viewerViewModel.deleteCurrent(repository, safeViewerMedium)
+                            }
                         }
-                    }
-                )
+                    )
 
-                !dockInViewerMode && galleryState.isMultiSelectMode -> DockMode.Selection(
-                    selectedCount = galleryState.selectedIds.size,
-                    selectedMedia = selectedMedia,
-                    isTrashMode = galleryState.isTrashOverlay,
-                    isVaultMode = galleryState.isVaultOverlay,
-                    isPickerMode = pickerMode && allowMultiple,
-                    onClearSelection = { galleryViewModel.clearSelection() },
-                    onSelectAll = { galleryViewModel.selectAll() },
-                    onConfirmPick = {
-                        onMediaPicked(selectedMedia.map { it.uri })
-                    },
-                    onAddToAlbum = {
-                        if (selectedMedia.isNotEmpty()) pendingAddToAlbumItems = selectedMedia
-                    },
-                    onMoveToVault = {
-                        moveItemsToLockedFolder(selectedMedia)
-                    },
-                    onRestore = {
-                        if (galleryState.isVaultOverlay) {
-                            scope.launch {
-                                val count = VaultManager.unlockItemsToGallery(context, selectedMedia)
-                                if (count > 0) {
-                                    galleryViewModel.refresh()
-                                    galleryViewModel.clearSelection()
-                                    Toast.makeText(context, "Unlocked $count item(s)", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        } else {
-                            galleryViewModel.restoreSelected()
-                        }
-                    },
-                    onUpnpCastClick = {
-                        upnpCastTarget = selectedMedia.firstOrNull()
-                    },
-                    onDelete = {
-                        when {
-                            galleryState.isVaultOverlay -> {
+                    !dockInViewerMode && galleryState.isMultiSelectMode -> DockMode.Selection(
+                        selectedCount = galleryState.selectedIds.size,
+                        selectedMedia = activeSelectedItems.filterNot { VaultManager.isVaultMedium(it) },
+                        isTrashMode = galleryState.isTrashOverlay,
+                        isVaultMode = isSelectionAllVault,
+                        showConfirmPick = pickerMode && allowMultiple,
+                        onClearSelection = { galleryViewModel.clearSelection() },
+                        onSelectAll = { galleryViewModel.selectAll() },
+                        onConfirmPick = {
+                            val picked = galleryState.allMedia
+                                .filter { it.id in galleryState.selectedIds && !VaultManager.isVaultMedium(it) }
+                                .map { it.uri }
+                            onMediaPicked(picked)
+                        },
+                        onAddToAlbum = {
+                            val publicItems = activeSelectedItems.filterNot { VaultManager.isVaultMedium(it) }
+                            if (publicItems.isNotEmpty()) pendingAddToAlbumItems = publicItems
+                        },
+                        onMoveToVault = { hideAndEncryptItems(activeSelectedItems) },
+                        onRestore = {
+                            if (isSelectionAllVault) {
                                 scope.launch {
-                                    VaultManager.deletePermanently(context, selectedMedia)
-                                    galleryViewModel.clearSelection()
-                                    Toast.makeText(context, "Deleted permanently", Toast.LENGTH_SHORT).show()
+                                    val count = VaultManager.unlockItemsToGallery(context, activeSelectedItems)
+                                    if (count > 0) {
+                                        galleryViewModel.refresh()
+                                        galleryViewModel.clearSelection()
+                                        Toast.makeText(context, "Unlocked $count item(s) for all apps", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            } else {
+                                galleryViewModel.restoreSelected()
+                            }
+                        },
+                        onUpnpCastSingle = { single -> upnpCastTarget = single },
+                        onDelete = {
+                            val vaultOnes = activeSelectedItems.filter { VaultManager.isVaultMedium(it) }
+                            val publicOnes = activeSelectedItems.filterNot { VaultManager.isVaultMedium(it) }
+                            if (vaultOnes.isNotEmpty()) {
+                                scope.launch {
+                                    VaultManager.deletePermanently(context, vaultOnes)
+                                    if (publicOnes.isEmpty()) galleryViewModel.clearSelection()
                                 }
                             }
-                            galleryState.isTrashOverlay -> galleryViewModel.deleteSelectedPermanently()
-                            else -> galleryViewModel.trashSelected(true)
+                            if (publicOnes.isNotEmpty()) {
+                                if (galleryState.isTrashOverlay) {
+                                    galleryViewModel.deleteSelectedPermanently()
+                                } else {
+                                    galleryViewModel.trashSelected(true)
+                                }
+                            }
                         }
-                    }
-                )
+                    )
 
-                !dockInViewerMode -> DockMode.Home(
-                    currentTab = galleryState.selectedTab,
-                    isCollapsed = dockScrollState.isCollapsed,
-                    showScrollToTop = showScrollToTop,
-                    isSearchActive = galleryState.isSearchActive,
-                    searchQuery = galleryState.searchQuery,
-                    activeAlbumName = galleryState.activeAlbumName,
-                    onTabSelect = { tab ->
-                        dockScrollState.expand()
-                        galleryViewModel.setTab(tab)
-                    },
-                    onSearchOpen = {
-                        dockScrollState.expand()
-                        galleryViewModel.setSearchActive(true)
-                    },
-                    onSearchClose = {
-                        dockScrollState.expand()
-                        galleryViewModel.setSearchActive(false)
-                    },
-                    onSearchQueryChange = { galleryViewModel.setSearchQuery(it) },
-                    onScrollToTop = {
-                        dockScrollState.expand()
-                        scope.launch { activeScrollGridState.animateScrollToItem(0) }
-                    }
-                )
+                    !dockInViewerMode -> DockMode.Home(
+                        currentTab = galleryState.selectedTab,
+                        isCollapsed = dockScrollState.isCollapsed,
+                        showScrollToTop = showScrollToTop,
+                        isSearchActive = galleryState.isSearchActive,
+                        searchQuery = galleryState.searchQuery,
+                        activeAlbumName = galleryState.activeAlbumName,
+                        onTabSelect = { tab ->
+                            dockScrollState.expand()
+                            galleryViewModel.setTab(tab)
+                        },
+                        onSearchOpen = {
+                            dockScrollState.expand()
+                            galleryViewModel.setSearchActive(true)
+                        },
+                        onSearchClose = {
+                            dockScrollState.expand()
+                            galleryViewModel.setSearchActive(false)
+                        },
+                        onSearchQueryChange = { galleryViewModel.setSearchQuery(it) },
+                        onScrollToTop = {
+                            dockScrollState.expand()
+                            scope.launch { activeScrollGridState.animateScrollToItem(0) }
+                        }
+                    )
 
-                else -> null
+                    else -> null
+                }
+
+                val isDockVisible = when {
+                    dockInViewerMode -> viewerState.isChromeVisible &&
+                        isVideoActionDockVisible &&
+                        !viewerState.isDetailsSheetOpen &&
+                        pendingAddToAlbumItems == null &&
+                        upnpCastTarget == null
+                    else -> true
+                }
+
+                if (dockMode != null) {
+                    LuminaBottomDock(
+                        mode = dockMode,
+                        visible = isDockVisible,
+                        onShareMenuOpenChange = { isShareMenuOpen = it },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
             }
 
-            val isDockVisible = when {
-                dockInViewerMode -> viewerState.isChromeVisible &&
-                    isVideoActionDockVisible &&
-                    !viewerState.isDetailsSheetOpen &&
-                    pendingAddToAlbumItems == null &&
-                    upnpCastTarget == null
-                galleryState.isMultiSelectMode -> !pickerMode || allowMultiple
-                else -> true
-            }
-
-            if (dockMode != null) {
-                LuminaBottomDock(
-                    mode = dockMode,
-                    visible = isDockVisible,
-                    onShareMenuOpenChange = { isShareMenuOpen = it },
-                    modifier = Modifier.align(Alignment.BottomCenter)
+            // Built-in Zero-Dependency Native Compose Photo Editor
+            val targetEdit = editingMedium
+            if (targetEdit != null) {
+                LuminaPhotoEditor(
+                    medium = targetEdit,
+                    onSaved = { savedUri ->
+                        editingMedium = null
+                        if (savedUri != null) {
+                            galleryViewModel.refresh()
+                            Toast.makeText(context, "Saved edited copy", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Failed to save copy", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onClose = { editingMedium = null },
+                    modifier = Modifier.fillMaxSize()
                 )
             }
 

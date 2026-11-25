@@ -64,28 +64,37 @@ fun ViewerTopBar(
     medium: Medium,
     isFavorite: Boolean,
     isVaultMode: Boolean = false,
+    useLightChrome: Boolean = false,
     onFavoriteToggle: () -> Unit,
     onDetailsClick: () -> Unit,
-    onMoveToVaultClick: (() -> Unit)? = null,
+    onHideClick: (() -> Unit)? = null,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val darkScheme = rememberLuminaDarkColorScheme(dynamicColor = true)
-    val tokens = rememberLuminaPillTokens(darkOverride = true, colorSchemeOverride = darkScheme)
+    val activeScheme = if (useLightChrome) MaterialTheme.colorScheme else darkScheme
+    val tokens = rememberLuminaPillTokens(
+        darkOverride = !useLightChrome,
+        colorSchemeOverride = activeScheme
+    )
     var isMenuOpen by remember { mutableStateOf(false) }
 
     val datePillLabel = remember(medium.dateTakenMs) {
         formatViewerDatePill(medium.dateTakenMs)
     }
 
+    val scrimBase = if (useLightChrome) activeScheme.background else Color.Black
+    val scrimTopAlpha = if (useLightChrome) 0.72f else 0.54f
+    val scrimMidAlpha = if (useLightChrome) 0.28f else 0.20f
+
     Box(
         modifier = modifier
             .fillMaxWidth()
             .drawWithCache {
                 val scrim = Brush.verticalGradient(
-                    0.0f to Color.Black.copy(alpha = 0.60f),
-                    0.65f to Color.Black.copy(alpha = 0.22f),
+                    0.0f to scrimBase.copy(alpha = scrimTopAlpha),
+                    0.65f to scrimBase.copy(alpha = scrimMidAlpha),
                     1.0f to Color.Transparent
                 )
                 onDrawBehind { drawRect(brush = scrim) }
@@ -195,7 +204,7 @@ fun ViewerTopBar(
                 onDismissRequest = { isMenuOpen = false },
                 offset = DpOffset(0.dp, 8.dp),
                 shape = RoundedCornerShape(22.dp),
-                containerColor = darkScheme.surfaceContainerHigh,
+                containerColor = activeScheme.surfaceContainerHigh,
                 tonalElevation = 0.dp,
                 shadowElevation = 8.dp,
                 border = tokens.border
@@ -209,7 +218,7 @@ fun ViewerTopBar(
                             Icon(
                                 imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                 contentDescription = null,
-                                tint = if (isFavorite) darkScheme.primary else darkScheme.onSurface,
+                                tint = if (isFavorite) activeScheme.primary else activeScheme.onSurface,
                                 modifier = Modifier.size(20.dp)
                             )
                         },
@@ -218,7 +227,7 @@ fun ViewerTopBar(
                                 text = if (isFavorite) "Remove favorite" else "Favorite",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
-                                color = darkScheme.onSurface
+                                color = activeScheme.onSurface
                             )
                         },
                         onClick = {
@@ -227,28 +236,28 @@ fun ViewerTopBar(
                         }
                     )
 
-                    if (onMoveToVaultClick != null) {
+                    if (onHideClick != null) {
                         DropdownMenuItem(
                             contentPadding = itemPadding,
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Default.Lock,
                                     contentDescription = null,
-                                    tint = darkScheme.onSurface,
+                                    tint = activeScheme.onSurface,
                                     modifier = Modifier.size(20.dp)
                                 )
                             },
                             text = {
                                 Text(
-                                    text = "Move to Locked Folder",
+                                    text = "Hide & encrypt",
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Medium,
-                                    color = darkScheme.onSurface
+                                    color = activeScheme.onSurface
                                 )
                             },
                             onClick = {
                                 isMenuOpen = false
-                                onMoveToVaultClick()
+                                onHideClick()
                             }
                         )
                     }
@@ -260,7 +269,7 @@ fun ViewerTopBar(
                         Icon(
                             imageVector = Icons.Default.Info,
                             contentDescription = null,
-                            tint = darkScheme.onSurface,
+                            tint = activeScheme.onSurface,
                             modifier = Modifier.size(20.dp)
                         )
                     },
@@ -269,7 +278,7 @@ fun ViewerTopBar(
                             text = "Details",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
-                            color = darkScheme.onSurface
+                            color = activeScheme.onSurface
                         )
                     },
                     onClick = {
@@ -281,7 +290,7 @@ fun ViewerTopBar(
                 if (!isVaultMode) {
                     HorizontalDivider(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
-                        color = darkScheme.outlineVariant.copy(alpha = 0.35f)
+                        color = activeScheme.outlineVariant.copy(alpha = 0.35f)
                     )
 
                     if (!medium.isVideo) {
@@ -291,7 +300,7 @@ fun ViewerTopBar(
                                 Icon(
                                     imageVector = Icons.Default.Wallpaper,
                                     contentDescription = null,
-                                    tint = darkScheme.onSurface,
+                                    tint = activeScheme.onSurface,
                                     modifier = Modifier.size(20.dp)
                                 )
                             },
@@ -299,7 +308,7 @@ fun ViewerTopBar(
                                 Text(
                                     text = "Set as wallpaper",
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = darkScheme.onSurface
+                                    color = activeScheme.onSurface
                                 )
                             },
                             onClick = {
@@ -315,7 +324,7 @@ fun ViewerTopBar(
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                                 contentDescription = null,
-                                tint = darkScheme.onSurface,
+                                tint = activeScheme.onSurface,
                                 modifier = Modifier.size(20.dp)
                             )
                         },
@@ -323,16 +332,18 @@ fun ViewerTopBar(
                             Text(
                                 text = "Open with",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = darkScheme.onSurface
+                                color = activeScheme.onSurface
                             )
                         },
                         onClick = {
                             isMenuOpen = false
-                            val intent = Intent(Intent.ACTION_VIEW).apply {
-                                setDataAndType(medium.uri, medium.mimeType)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            runCatching {
+                                val intent = Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(medium.uri, medium.mimeType)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(Intent.createChooser(intent, "Open with"))
                             }
-                            context.startActivity(Intent.createChooser(intent, "Open with"))
                         }
                     )
 
@@ -342,7 +353,7 @@ fun ViewerTopBar(
                             Icon(
                                 imageVector = Icons.Default.Tune,
                                 contentDescription = null,
-                                tint = darkScheme.onSurface,
+                                tint = activeScheme.onSurface,
                                 modifier = Modifier.size(20.dp)
                             )
                         },
@@ -350,16 +361,18 @@ fun ViewerTopBar(
                             Text(
                                 text = "Use as",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = darkScheme.onSurface
+                                color = activeScheme.onSurface
                             )
                         },
                         onClick = {
                             isMenuOpen = false
-                            val intent = Intent(Intent.ACTION_ATTACH_DATA).apply {
-                                setDataAndType(medium.uri, medium.mimeType)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            runCatching {
+                                val intent = Intent(Intent.ACTION_ATTACH_DATA).apply {
+                                    setDataAndType(medium.uri, medium.mimeType)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(Intent.createChooser(intent, "Use as"))
                             }
-                            context.startActivity(Intent.createChooser(intent, "Use as"))
                         }
                     )
                 }
@@ -382,11 +395,13 @@ private fun launchSetWallpaper(context: Context, medium: Medium) {
         val intent = WallpaperManager.getInstance(context).getCropAndSetWallpaperIntent(medium.uri)
         context.startActivity(intent)
     } catch (_: Exception) {
-        val fallback = Intent(Intent.ACTION_ATTACH_DATA).apply {
-            setDataAndType(medium.uri, medium.mimeType)
-            putExtra("mimeType", medium.mimeType)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        runCatching {
+            val fallback = Intent(Intent.ACTION_ATTACH_DATA).apply {
+                setDataAndType(medium.uri, medium.mimeType)
+                putExtra("mimeType", medium.mimeType)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(fallback, "Set as"))
         }
-        context.startActivity(Intent.createChooser(fallback, "Set as"))
     }
 }

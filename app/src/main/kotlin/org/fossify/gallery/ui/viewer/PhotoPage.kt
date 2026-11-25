@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -34,6 +35,7 @@ import kotlin.math.max
 @Composable
 fun PhotoPage(
     medium: Medium,
+    useLightChrome: Boolean = false,
     modifier: Modifier = Modifier,
     onSingleTap: () -> Unit = {},
     onEdgeSwipeHandoff: (Boolean) -> Unit = {},
@@ -120,7 +122,13 @@ fun PhotoPage(
                             }
                     )
                 } else if (isLoading) {
-                    LoadingIndicator(color = Color.White.copy(alpha = 0.85f))
+                    LoadingIndicator(
+                        color = if (useLightChrome) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            Color.White.copy(alpha = 0.85f)
+                        }
+                    )
                 }
             }
         }
