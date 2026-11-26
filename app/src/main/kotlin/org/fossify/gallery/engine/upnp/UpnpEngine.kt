@@ -2,23 +2,28 @@ package org.fossify.gallery.engine.upnp
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.util.Log
 import android.util.Xml
 import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.fossify.gallery.engine.vault.VaultCrypto
 import org.fossify.gallery.models.Medium
@@ -26,17 +31,26 @@ import org.xmlpull.v1.XmlPullParser
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.io.StringReader
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.MulticastSocket
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.SecureRandom
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+
+private const val TAG = "LuminaUpnp"
+private val INVALID_XML_CHARS = Regex("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]")
+private val BARE_AMP = Regex("&(?!#\\d+;|#x[0-9a-fA-F]+;|[a-zA-Z][a-zA-Z0-9._-]*;)")
 
 @Immutable
 data class UpnpDevice(
@@ -66,43 +80,69 @@ object UpnpEngine {
 
     private val mediaServer = LocalMediaHttpServer()
 
-    fun discoverDevices(context: Context, scanDurationMs: Long = 2_400L): Flow<List<UpnpDevice>> = flow {
+    fun discoverDevices(context: Context, scanDurationMs: Long = 4_500L): Flow<List<UpnpDevice>> = channelFlow {
         val appCtx = context.applicationContext
+        val cm = appCtx.getSystemService(ConnectivityManager::class.java)
         val wifiManager = appCtx.getSystemService(WifiManager::class.java)
-        val multicastLock = try {
+
+        val wifiNetwork = findWifiNetwork(cm)
+        val wifiIpv4 = findWifiIpv4(cm, wifiNetwork)
+        val wifiInterface = wifiIpv4?.let { runCatching { NetworkInterface.getByInetAddress(it) }.getOrNull() }
+
+        Log.d(TAG, "Scan start: wifiNet=$wifiNetwork ipv4=${wifiIpv4?.hostAddress} iface=${wifiInterface?.name}")
+
+        val multicastLock = runCatching {
             wifiManager?.createMulticastLock("lumina_upnp_ssdp")?.apply {
                 setReferenceCounted(false)
                 acquire()
             }
-        } catch (_: Exception) {
-            null
-        }
+        }.onFailure { Log.w(TAG, "MulticastLock failed", it) }.getOrNull()
 
         val discovered = LinkedHashMap<String, UpnpDevice>()
-        val seenLocations = HashSet<String>()
+        val emitMutex = Mutex()
+        val seenLocations = ConcurrentHashMap.newKeySet<String>()
 
         try {
-            emit(emptyList())
-            val socket = DatagramSocket().apply {
-                soTimeout = 350
-                broadcast = true
+            send(emptyList())
+
+            val bindAddr = wifiIpv4?.let { InetSocketAddress(it, 0) } ?: InetSocketAddress(0)
+            val socket = MulticastSocket(bindAddr).apply {
+                soTimeout = 400
+                timeToLive = 4
+                wifiInterface?.let { networkInterface = it }
+                wifiNetwork?.let { net ->
+                    runCatching { net.bindSocket(this) }
+                        .onFailure { Log.w(TAG, "wifiNetwork.bindSocket failed (VPN lockdown?)", it) }
+                }
             }
 
             try {
                 val targetAddr = InetAddress.getByName(SSDP_ADDRESS)
                 val searchTargets = listOf(
+                    "urn:schemas-upnp-org:device:MediaRenderer:1",
                     AV_TRANSPORT_SERVICE,
-                    "urn:schemas-upnp-org:device:MediaRenderer:1"
+                    "upnp:rootdevice",
+                    "ssdp:all"
                 )
-                for (st in searchTargets) {
-                    val payload = buildString {
-                        append("M-SEARCH * HTTP/1.1\r\n")
-                        append("HOST: $SSDP_ADDRESS:$SSDP_PORT\r\n")
-                        append("MAN: \"ssdp:discover\"\r\n")
-                        append("MX: 2\r\n")
-                        append("ST: $st\r\n\r\n")
-                    }.toByteArray(Charsets.UTF_8)
-                    socket.send(DatagramPacket(payload, payload.size, targetAddr, SSDP_PORT))
+
+                // 3 staggered bursts so Wi-Fi multicast loss / TV sleep doesn't miss the scan
+                val senderJob = launch(Dispatchers.IO) {
+                    repeat(3) { round ->
+                        for (st in searchTargets) {
+                            val payload = buildString {
+                                append("M-SEARCH * HTTP/1.1\r\n")
+                                append("HOST: $SSDP_ADDRESS:$SSDP_PORT\r\n")
+                                append("MAN: \"ssdp:discover\"\r\n")
+                                append("MX: 2\r\n")
+                                append("ST: $st\r\n")
+                                append("USER-AGENT: Android/16 UPnP/1.1 Lumina/1.0\r\n\r\n")
+                            }.toByteArray(Charsets.UTF_8)
+                            runCatching {
+                                socket.send(DatagramPacket(payload, payload.size, targetAddr, SSDP_PORT))
+                            }.onFailure { Log.e(TAG, "M-SEARCH send failed (round=$round, st=$st)", it) }
+                        }
+                        delay(750)
+                    }
                 }
 
                 val deadline = System.currentTimeMillis() + scanDurationMs
@@ -114,26 +154,39 @@ object UpnpEngine {
                         socket.receive(packet)
                         val response = String(packet.data, 0, packet.length, Charsets.UTF_8)
                         val location = extractHeader(response, "LOCATION") ?: continue
+                        val st = extractHeader(response, "ST") ?: extractHeader(response, "NT") ?: ""
+
                         if (seenLocations.add(location)) {
-                            fetchDeviceDescription(location)?.let { device ->
-                                if (discovered.putIfAbsent(device.udn, device) == null) {
-                                    emit(discovered.values.toList())
+                            Log.d(TAG, "SSDP reply from ${packet.address.hostAddress} ST=$st LOC=$location")
+                            launch(Dispatchers.IO) {
+                                fetchDeviceDescription(location, wifiNetwork)?.let { device ->
+                                    val snapshot = emitMutex.withLock {
+                                        if (discovered.putIfAbsent(device.udn, device) == null) {
+                                            discovered.values.toList()
+                                        } else null
+                                    }
+                                    if (snapshot != null) {
+                                        Log.i(TAG, "Renderer added: ${device.friendlyName} (${device.manufacturer}) -> ${device.controlUrl}")
+                                        send(snapshot)
+                                    }
                                 }
                             }
                         }
                     } catch (_: SocketTimeoutException) {
-                        // Loop until scanDurationMs elapses
+                        // Normal poll timeout until deadline
+                    } catch (e: Exception) {
+                        Log.w(TAG, "SSDP receive error", e)
                     }
                 }
+
+                senderJob.cancel()
             } finally {
                 socket.close()
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "SSDP discovery crashed", e)
         } finally {
-            try {
-                if (multicastLock?.isHeld == true) multicastLock.release()
-            } catch (_: Exception) {
-            }
+            runCatching { if (multicastLock?.isHeld == true) multicastLock.release() }
         }
     }.flowOn(Dispatchers.IO)
 
@@ -255,89 +308,125 @@ object UpnpEngine {
         }
     }
 
-    private fun fetchDeviceDescription(locationUrl: String): UpnpDevice? {
-        val conn = (URL(locationUrl).openConnection() as HttpURLConnection).apply {
+    @Suppress("DEPRECATION")
+    private fun findWifiNetwork(cm: ConnectivityManager?): Network? {
+        if (cm == null) return null
+        return cm.allNetworks.firstOrNull { net ->
+            val caps = cm.getNetworkCapabilities(net) ?: return@firstOrNull false
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+        }
+    }
+
+    private fun findWifiIpv4(cm: ConnectivityManager?, wifiNetwork: Network?): Inet4Address? {
+        if (cm == null || wifiNetwork == null) return null
+        return cm.getLinkProperties(wifiNetwork)
+            ?.linkAddresses
+            ?.firstOrNull { it.address is Inet4Address && !it.address.isLoopbackAddress }
+            ?.address as? Inet4Address
+    }
+
+    private fun fetchDeviceDescription(locationUrl: String, wifiNetwork: Network?): UpnpDevice? {
+        val url = URL(locationUrl)
+        val conn = ((wifiNetwork?.openConnection(url) ?: url.openConnection()) as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 2_000
-            readTimeout = 2_000
+            connectTimeout = 2_500
+            readTimeout = 2_500
+            setRequestProperty("Connection", "close")
         }
 
         return try {
-            if (conn.responseCode !in 200..299) return null
-            conn.inputStream.use { stream ->
-                val parser = Xml.newPullParser()
-                parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
-                parser.setInput(stream, null)
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                Log.w(TAG, "XML fetch HTTP $code for $locationUrl")
+                return null
+            }
 
-                var friendlyName = ""
-                var manufacturer = ""
-                var modelName = ""
-                var udn = locationUrl
-                var avTransportControlUrl: String? = null
+            val rawXml = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val sanitized = rawXml
+                .replace(INVALID_XML_CHARS, "")
+                .replace(BARE_AMP, "&amp;")
 
-                var inService = false
-                var currentServiceType = ""
-                var currentControlUrl = ""
-                var currentTag = ""
+            val parser = Xml.newPullParser().apply {
+                setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+                setInput(StringReader(sanitized))
+            }
 
-                var eventType = parser.eventType
-                while (eventType != XmlPullParser.END_DOCUMENT) {
-                    when (eventType) {
-                        XmlPullParser.START_TAG -> {
-                            currentTag = parser.name.lowercase(Locale.ROOT)
-                            if (currentTag == "service") {
-                                inService = true
-                                currentServiceType = ""
-                                currentControlUrl = ""
-                            }
-                        }
+            var urlBase = ""
+            var friendlyName = ""
+            var manufacturer = ""
+            var modelName = ""
+            var udn = ""
+            var avTransportControlUrl: String? = null
 
-                        XmlPullParser.TEXT -> {
-                            val text = parser.text?.trim().orEmpty()
-                            if (text.isNotEmpty()) {
-                                if (inService) {
-                                    when (currentTag) {
-                                        "servicetype" -> currentServiceType = text
-                                        "controlurl" -> currentControlUrl = text
-                                    }
-                                } else {
-                                    when (currentTag) {
-                                        "friendlyname" -> if (friendlyName.isEmpty()) friendlyName = text
-                                        "manufacturer" -> if (manufacturer.isEmpty()) manufacturer = text
-                                        "modelname" -> if (modelName.isEmpty()) modelName = text
-                                        "udn" -> udn = text
-                                    }
-                                }
-                            }
-                        }
+            var inService = false
+            var currentServiceType = ""
+            var currentControlUrl = ""
+            val textBuf = StringBuilder()
 
-                        XmlPullParser.END_TAG -> {
-                            val endTag = parser.name.lowercase(Locale.ROOT)
-                            if (endTag == "service") {
-                                if (currentServiceType.contains("AVTransport", ignoreCase = true) &&
-                                    currentControlUrl.isNotBlank()
-                                ) {
-                                    avTransportControlUrl = URL(URL(locationUrl), currentControlUrl).toString()
-                                }
-                                inService = false
-                            }
-                            currentTag = ""
+            var eventType = parser.eventType
+            while (eventType != XmlPullParser.END_DOCUMENT) {
+                when (eventType) {
+                    XmlPullParser.START_TAG -> {
+                        textBuf.setLength(0)
+                        val tag = parser.name.substringAfter(':').lowercase(Locale.ROOT)
+                        if (tag == "service") {
+                            inService = true
+                            currentServiceType = ""
+                            currentControlUrl = ""
                         }
                     }
-                    eventType = parser.next()
+                    XmlPullParser.TEXT -> {
+                        textBuf.append(parser.text.orEmpty())
+                    }
+                    XmlPullParser.END_TAG -> {
+                        val tag = parser.name.substringAfter(':').lowercase(Locale.ROOT)
+                        val value = textBuf.toString().trim()
+                        if (inService) {
+                            when (tag) {
+                                "servicetype" -> currentServiceType = value
+                                "controlurl" -> currentControlUrl = value
+                                "service" -> {
+                                    if (currentServiceType.contains("AVTransport", ignoreCase = true) &&
+                                        currentControlUrl.isNotBlank()
+                                    ) {
+                                        val base = URL(urlBase.ifBlank { locationUrl })
+                                        avTransportControlUrl = URL(base, currentControlUrl).toString()
+                                    }
+                                    inService = false
+                                }
+                            }
+                        } else if (value.isNotEmpty()) {
+                            when (tag) {
+                                "urlbase" -> if (urlBase.isEmpty()) urlBase = value
+                                "friendlyname" -> if (friendlyName.isEmpty()) friendlyName = value
+                                "manufacturer" -> if (manufacturer.isEmpty()) manufacturer = value
+                                "modelname" -> if (modelName.isEmpty()) modelName = value
+                                "udn" -> if (udn.isEmpty()) udn = value
+                            }
+                        }
+                        textBuf.setLength(0)
+                    }
                 }
-
-                val control = avTransportControlUrl ?: return null
-                UpnpDevice(
-                    udn = udn,
-                    friendlyName = friendlyName.ifBlank { modelName.ifBlank { "UPnP Renderer" } },
-                    manufacturer = manufacturer,
-                    modelName = modelName,
-                    controlUrl = control,
-                    locationUrl = locationUrl
-                )
+                eventType = parser.next()
             }
-        } catch (_: Exception) {
+
+            val control = avTransportControlUrl
+            if (control == null) {
+                Log.d(TAG, "Ignoring non-renderer device: $friendlyName ($locationUrl)")
+                return null
+            }
+
+            UpnpDevice(
+                udn = udn.ifBlank { locationUrl },
+                friendlyName = friendlyName.ifBlank { modelName.ifBlank { "UPnP Renderer" } },
+                manufacturer = manufacturer,
+                modelName = modelName,
+                controlUrl = control,
+                locationUrl = locationUrl
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "XML parse/fetch failed for $locationUrl", e)
             null
         } finally {
             conn.disconnect()
